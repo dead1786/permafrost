@@ -185,6 +185,8 @@ class PFWatchdog:
     def run(self):
         """Continuous watchdog loop."""
         self._log(f"watchdog started (PID {os.getpid()})")
+        # Grace period: wait for services to start and write first heartbeat
+        time.sleep(30)
         try:
             while True:
                 self.run_once()
