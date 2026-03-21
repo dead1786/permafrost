@@ -477,47 +477,54 @@ class ClaudeCLIProvider(BaseProvider):
         return self._retry(self._do_chat, messages, **kwargs)
 
     def _do_chat(self, messages: list[dict], **kwargs) -> str:
-        # Build prompt from messages — keep it concise for CLI
+        import tempfile
+
+        # Build FULL conversation prompt including history
         parts = []
-        system_parts = []
         for m in messages:
-            if m["role"] == "system":
-                system_parts.append(m["content"])
-            elif m["role"] == "user":
-                parts.append(m["content"])
-            elif m["role"] == "assistant":
-                parts.append(f"[Previous response]: {m['content'][:500]}")
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            if role == "system":
+                parts.append(f"<system>\n{content}\n</system>")
+            elif role == "user":
+                parts.append(f"<user>\n{content}\n</user>")
+            elif role == "assistant":
+                parts.append(f"<assistant>\n{content}\n</assistant>")
 
-        # Use the last user message as the main prompt
-        user_prompt = parts[-1] if parts else ""
+        # Add instruction to continue the conversation
+        full_prompt = "\n\n".join(parts)
+        full_prompt += "\n\nRespond to the latest <user> message above. You are the assistant in this conversation. Maintain continuity with previous messages."
 
-        # Prepend system context (truncated to fit)
-        system_text = "\n".join(system_parts)[:3000]
-        if system_text:
-            full_prompt = f"{system_text}\n\n---\n\n{user_prompt}"
-        else:
-            full_prompt = user_prompt
-
-        # Call claude CLI with explicit model + max permissions
-        cmd = [
-            "claude", "-p", full_prompt,
-            "--model", self.model,
-            "--allowedTools", "Bash,Read,Write,Edit",
-        ]
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True, text=True, timeout=self.timeout,
-            encoding="utf-8", errors="replace",
+        # Write to temp file (avoids command line length limits)
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False, encoding="utf-8"
         )
+        tmp.write(full_prompt)
+        tmp_path = tmp.name
+        tmp.close()
 
-        if result.stdout.strip():
-            return result.stdout.strip()
+        try:
+            result = subprocess.run(
+                ["claude", "-p", full_prompt[:6000],  # Direct arg (truncated for safety)
+                 "--model", self.model,
+                 "--allowedTools", "Bash,Read,Write,Edit",
+                ],
+                capture_output=True, text=True, timeout=self.timeout,
+                encoding="utf-8", errors="replace",
+            )
 
-        if result.stderr.strip():
-            return f"[error] {result.stderr.strip()[:500]}"
+            if result.stdout.strip():
+                return result.stdout.strip()
 
-        return "[error] No response from Claude CLI"
+            if result.stderr.strip():
+                return f"[error] {result.stderr.strip()[:500]}"
+
+            return "[error] No response from Claude CLI"
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     def validate(self) -> tuple[bool, str]:
         # Check if claude CLI is available and logged in
