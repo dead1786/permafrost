@@ -187,14 +187,12 @@ class PFBrain:
         return results
 
     def _mark_read(self, inbox_path: Path, messages: list):
-        """Mark messages as read in inbox file."""
-        for m in messages:
-            m["read"] = True
+        """Clear inbox after processing to prevent re-reading stale messages."""
         try:
             with open(inbox_path, "w", encoding="utf-8") as f:
-                json.dump(messages, f, ensure_ascii=False, indent=2)
+                json.dump([], f)
         except OSError as e:
-            log.error(f"mark_read failed: {e}")
+            log.error(f"inbox clear failed: {e}")
 
     def _build_messages(self, channel: str, text: str) -> list[dict]:
         """Build message list with system prompt and conversation history."""
