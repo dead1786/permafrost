@@ -477,43 +477,53 @@ class ClaudeCLIProvider(BaseProvider):
         return self._retry(self._do_chat, messages, **kwargs)
 
     def _do_chat(self, messages: list[dict], **kwargs) -> str:
-        # Build prompt from messages
+        # Build prompt from messages — keep it concise for CLI
         parts = []
+        system_parts = []
         for m in messages:
             if m["role"] == "system":
-                parts.append(f"[System]\n{m['content']}")
+                system_parts.append(m["content"])
             elif m["role"] == "user":
-                parts.append(f"[User]\n{m['content']}")
+                parts.append(m["content"])
             elif m["role"] == "assistant":
-                parts.append(f"[Assistant]\n{m['content']}")
-        prompt = "\n\n".join(parts)
+                parts.append(f"[Previous response]: {m['content'][:500]}")
 
-        # Write to temp file to avoid shell escaping issues
-        import tempfile, os as _os
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False,
-                                         encoding="utf-8") as f:
-            f.write(prompt)
-            tmp_path = f.name
+        # Use the last user message as the main prompt
+        user_prompt = parts[-1] if parts else ""
 
-        try:
+        # Prepend system context (truncated to fit)
+        system_text = "\n".join(system_parts)[:3000]
+        if system_text:
+            full_prompt = f"{system_text}\n\n---\n\n{user_prompt}"
+        else:
+            full_prompt = user_prompt
+
+        # Pass via stdin pipe (avoids command line length limits + @file issues)
+        result = subprocess.run(
+            ["claude", "-p", "-"],
+            input=full_prompt,
+            capture_output=True, text=True, timeout=self.timeout,
+            encoding="utf-8", errors="replace",
+        )
+
+        if result.stdout.strip():
+            return result.stdout.strip()
+
+        # If stdin pipe didn't work, try direct argument (shorter prompts)
+        if result.returncode != 0:
+            short_prompt = user_prompt[:2000]
             result = subprocess.run(
-                ["claude", "-p", f"@{tmp_path}"],
+                ["claude", "-p", short_prompt],
                 capture_output=True, text=True, timeout=self.timeout,
                 encoding="utf-8", errors="replace",
             )
-
             if result.stdout.strip():
                 return result.stdout.strip()
 
-            if result.stderr.strip():
-                return f"[error] {result.stderr.strip()[:500]}"
+        if result.stderr.strip():
+            return f"[error] {result.stderr.strip()[:500]}"
 
-            return "[error] No response from Claude CLI"
-        finally:
-            try:
-                _os.unlink(tmp_path)
-            except OSError:
-                pass
+        return "[error] No response from Claude CLI"
 
     def validate(self) -> tuple[bool, str]:
         # Check if claude CLI is available and logged in
