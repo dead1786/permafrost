@@ -26,19 +26,13 @@ class PFTelegram(BaseChannel):
     LABEL = "Telegram"
     CONFIG_FIELDS = [
         {"name": "telegram_token", "label": "Bot Token", "type": "password",
-         "help": "Create a bot via @BotFather on Telegram", "required": True},
-        {"name": "telegram_chat_id", "label": "Chat ID", "type": "text",
-         "help": "Send /start to @userinfobot to get your ID", "required": True},
-        {"name": "telegram_poll_interval", "label": "Poll Interval (sec)", "type": "number",
-         "help": "Seconds between polls (default: 2)", "required": False},
-        {"name": "telegram_parse_mode", "label": "Parse Mode", "type": "select",
-         "help": "Message formatting: HTML or Markdown", "required": False,
-         "options": ["", "HTML", "Markdown"]},
+         "help": "Create a bot via @BotFather on Telegram. That's all you need!", "required": True},
     ]
 
     def __init__(self, config: dict, data_dir: str = None):
         super().__init__(config, data_dir)
         self.bot_token = config.get("telegram_token", "")
+        self._auto_detect_chat_id(config)
         self.chat_id = str(config.get("telegram_chat_id", ""))
         self.api_base = f"https://api.telegram.org/bot{self.bot_token}"
         self.last_update_id = 0
@@ -49,11 +43,31 @@ class PFTelegram(BaseChannel):
     def name(self) -> str:
         return "telegram"
 
+    def _auto_detect_chat_id(self, config):
+        """Auto-detect chat_id from recent messages if not configured."""
+        if self.chat_id or not self.bot_token:
+            return
+        try:
+            r = requests.get(f"{self.api_base}/getUpdates", params={"limit": 5}, timeout=10)
+            if r.ok:
+                updates = r.json().get("result", [])
+                for u in updates:
+                    msg = u.get("message", {})
+                    chat = msg.get("chat", {})
+                    if chat.get("id"):
+                        self.chat_id = str(chat["id"])
+                        log.info(f"Auto-detected chat_id: {self.chat_id}")
+                        return
+                if not self.chat_id:
+                    log.warning("No chat_id detected. Send /start to the bot on Telegram first.")
+        except Exception as e:
+            log.warning(f"chat_id auto-detect failed: {e}")
+
     def validate(self) -> tuple[bool, str]:
         if not self.bot_token:
             return False, "Telegram Bot Token is required"
         if not self.chat_id:
-            return False, "Telegram Chat ID is required"
+            return False, "Chat ID not detected. Send /start to your bot on Telegram, then restart."
         return True, ""
 
     def send_message(self, text: str, **kwargs) -> bool:

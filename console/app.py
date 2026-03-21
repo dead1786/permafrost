@@ -72,23 +72,22 @@ header[data-testid="stHeader"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# Sticky tab bar + auto-scroll chat to bottom
+# Fixed tab bar + auto-scroll chat to bottom
 st.markdown("""<style>
-/* Sticky tab navigation */
+/* Fixed tab navigation — immune to scroll/overflow issues */
 div[data-baseweb="tab-list"] {
-    position: sticky !important;
+    position: fixed !important;
     top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
     z-index: 9999 !important;
     background: #0e1117 !important;
-    padding: 0.5rem 0 !important;
+    padding: 0.5rem 2rem !important;
     border-bottom: 1px solid #333 !important;
 }
-/* Ensure parent doesn't clip sticky */
-div[data-testid="stTabs"] {
-    overflow: visible !important;
-}
-.block-container {
-    overflow: visible !important;
+/* Push content below the fixed tab bar */
+div[data-testid="stTabs"] > div:last-child {
+    padding-top: 3.5rem !important;
 }
 </style>""", unsafe_allow_html=True)
 
@@ -359,11 +358,11 @@ def render_chat():
         with st.chat_message(msg["role"], avatar=avatar):
             st.write(msg["content"])
 
-    # Auto-scroll to bottom of chat
-    import streamlit.components.v1 as components
-    components.html(
-        "<script>window.parent.document.querySelector('section.main').scrollTo(0, 999999);</script>",
-        height=0,
+    # Auto-scroll anchor at bottom of chat
+    st.markdown('<div id="pf-chat-bottom"></div>', unsafe_allow_html=True)
+    st.markdown(
+        '<script>document.getElementById("pf-chat-bottom")?.scrollIntoView({behavior:"smooth"});</script>',
+        unsafe_allow_html=True,
     )
 
     # Input
