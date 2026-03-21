@@ -106,7 +106,11 @@ class PFDiscord(BaseChannel):
             return False
         if not self.allowed_users:
             return True
-        return message.get("author", {}).get("id", "") in self.allowed_users
+        author_id = message.get("author", {}).get("id", "")
+        allowed = author_id in self.allowed_users
+        if not allowed:
+            log.debug(f"  user {author_id} not in allowed_users={self.allowed_users}")
+        return allowed
 
     def run(self):
         """Main polling loop."""

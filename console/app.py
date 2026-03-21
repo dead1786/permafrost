@@ -337,10 +337,8 @@ def render_setup():
             # Save persona answers for re-editing
             for q_id, ans in persona_answers.items():
                 new_config[f"persona_{q_id}"] = ans
-            # Only update channel configs that have actual values (don't overwrite with empty)
-            for k, v in channel_configs.items():
-                if v or k.endswith("_enabled"):
-                    new_config[k] = v
+            # Update all channel configs (including empty values to clear old settings)
+            new_config.update(channel_configs)
             save_config(new_config)
             # Write reload trigger so brain picks up new config without restart
             try:
