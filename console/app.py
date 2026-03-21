@@ -353,27 +353,24 @@ elif page == "chat":
 
         # Poll for response from web-outbox.json
         outbox_file = DATA_DIR / "web-outbox.json"
-        # Clear outbox BEFORE polling to avoid reading stale responses
-        try:
-            outbox_file.write_text("[]", encoding="utf-8")
-        except OSError:
-            pass
+        sent_at = datetime.now().isoformat()
         with st.chat_message("assistant"):
             placeholder = st.empty()
             placeholder.write("\u23f3 Thinking...")
             response = None
             for _ in range(60):  # wait up to 60 seconds
-                if outbox_file.exists():
+                outbox = safe_read_json(outbox_file)
+                # Only read responses newer than when we sent our message
+                new_msgs = [m for m in outbox
+                            if m.get("timestamp", "") > sent_at and not m.get("read", False)]
+                if new_msgs:
+                    response = new_msgs[-1]["text"]
+                    # Clear outbox
                     try:
-                        outbox = safe_read_json(outbox_file)
-                        unread = [m for m in outbox if not m.get("read", False)]
-                        if unread:
-                            response = unread[-1]["text"]
-                            # Clear outbox completely to prevent stale messages
-                            outbox_file.write_text("[]", encoding="utf-8")
-                            break
-                    except (json.JSONDecodeError, OSError):
+                        outbox_file.write_text("[]", encoding="utf-8")
+                    except OSError:
                         pass
+                    break
                 time.sleep(1)
 
             if response:
