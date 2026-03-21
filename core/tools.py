@@ -46,13 +46,18 @@ def get_tools_schema(provider_type: str = "openai") -> list[dict]:
     Returns list of tool definitions in the provider's native schema.
     """
     schemas = []
+    gemini_funcs = []  # Gemini needs all functions in ONE object
 
     for name, info in TOOLS.items():
         # Build JSON Schema properties from our simple parameter format
         properties = {}
         required = []
         for param_name, param_info in info["parameters"].items():
-            prop = {"type": param_info.get("type", "string")}
+            ptype = param_info.get("type", "string")
+            # Gemini doesn't support "number" type — use "integer" or "string"
+            if provider_type == "gemini" and ptype == "number":
+                ptype = "string"
+            prop = {"type": ptype}
             if "description" in param_info:
                 prop["description"] = param_info["description"]
             properties[param_name] = prop
@@ -83,17 +88,21 @@ def get_tools_schema(provider_type: str = "openai") -> list[dict]:
                 },
             })
         elif provider_type == "gemini":
-            schemas.append({
-                "function_declarations": [{
-                    "name": name,
-                    "description": info["description"],
-                    "parameters": {
-                        "type": "object",
-                        "properties": properties,
-                        "required": required,
-                    },
-                }]
-            })
+            func_decl = {
+                "name": name,
+                "description": info["description"],
+            }
+            # Only add parameters if there are any (Gemini errors on empty)
+            if properties:
+                params = {"type": "object", "properties": properties}
+                if required:
+                    params["required"] = required
+                func_decl["parameters"] = params
+            gemini_funcs.append(func_decl)
+
+    # Gemini: wrap all functions in a single tool object
+    if provider_type == "gemini" and gemini_funcs:
+        schemas = [{"function_declarations": gemini_funcs}]
 
     return schemas
 
@@ -1609,11 +1618,24 @@ def has_tool_calls(text: str) -> bool:
 
 
 def strip_tool_calls(text: str) -> str:
-    """Remove [TOOL_CALL]...[/TOOL_CALL] blocks from text (and variants).
+    """Remove ALL tool call blocks from text — aggressive cleanup.
 
-    Returns the text with tool call blocks removed,
-    so the final response to the user is clean.
+    Catches [TOOL_CALL], [TOOL_CODE], [tool_call], backtick blocks,
+    and any remaining JSON-looking tool invocations.
     """
     result = _TOOL_CALL_PATTERN.sub("", text)
     result = _TOOL_CALL_VARIANTS.sub("", result)
+    result = _TOOL_CALL_BACKTICK.sub("", result)
+    # Last resort: catch any remaining [ANYTHING]{json}[/ANYTHING] patterns
+    result = re.sub(
+        r'\[/?(?:TOOL_CALL|TOOL_CODE|tool_call|tool_code)\]',
+        '', result,
+    )
+    # Clean up any orphaned JSON tool objects left behind
+    result = re.sub(
+        r'\{"name"\s*:\s*"[a-z_]+"[^}]*"args"\s*:\s*\{[^}]*\}\s*\}',
+        '', result,
+    )
+    # Remove excessive whitespace from cleanup
+    result = re.sub(r'\n{3,}', '\n\n', result)
     return result.strip()
