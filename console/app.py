@@ -339,6 +339,11 @@ elif page == "chat":
 
         # Poll for response from web-outbox.json
         outbox_file = DATA_DIR / "web-outbox.json"
+        # Clear outbox BEFORE polling to avoid reading stale responses
+        try:
+            outbox_file.write_text("[]", encoding="utf-8")
+        except OSError:
+            pass
         with st.chat_message("assistant"):
             placeholder = st.empty()
             placeholder.write("\u23f3 Thinking...")
