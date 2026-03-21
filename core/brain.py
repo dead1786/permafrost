@@ -25,7 +25,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from .hooks import HookManager
 from .providers import create_provider, BaseProvider
+from .tools import execute_tool, get_tool_prompt, parse_tool_calls, strip_tool_calls
 
 log = logging.getLogger("permafrost.brain")
 
@@ -43,6 +45,9 @@ DEFAULT_CONFIG = {
     "max_context_pct": 70,          # trigger compaction at this %
     "data_dir": "",                 # base directory for all data files
     "system_prompt": "",            # optional system prompt for AI
+    "enable_tools": False,          # enable tool use (AI can call tools)
+    "max_tool_rounds": 5,           # max consecutive tool-use rounds per message
+    "allowed_user_ids": "",         # comma-separated user IDs (empty = allow all)
 }
 
 
@@ -73,6 +78,21 @@ class PFBrain:
         self._conversation: list[dict] = []
         self._max_history = 50  # messages to keep in memory
         self._conversation_file = self.data_dir / "brain-conversation.json"
+
+        # Hook system
+        self.hooks = HookManager(self.config)
+
+        # Security (for tool authorization)
+        self._security = None
+        if self.config.get("enable_tools"):
+            try:
+                from .security import PFSecurity
+                self._security = PFSecurity(
+                    config=self.config.get("security", {}),
+                    data_dir=str(self.data_dir),
+                )
+            except Exception as e:
+                log.warning(f"Security init failed (tools run without auth): {e}")
 
         # State
         self.running = False
@@ -206,45 +226,160 @@ class PFBrain:
         except OSError as e:
             log.error(f"inbox clear failed: {e}")
 
-    def _build_messages(self, channel: str, text: str) -> list[dict]:
-        """Build message list with system prompt and conversation history."""
+    def _build_messages(self, channel: str, text: str, metadata: dict = None) -> list[dict]:
+        """Build message list with system prompt, tool instructions, and conversation history."""
         msgs = []
 
-        # System prompt
+        # System prompt (with tool instructions appended if enabled)
         sys_prompt = self.config.get("system_prompt", "")
+        if self.config.get("enable_tools"):
+            tool_prompt = get_tool_prompt()
+            if sys_prompt:
+                sys_prompt = f"{sys_prompt}\n\n{tool_prompt}"
+            else:
+                sys_prompt = tool_prompt
         if sys_prompt:
             msgs.append({"role": "system", "content": sys_prompt})
 
         # Conversation history
         msgs.extend(self._conversation)
 
-        # New user message with source tag
-        source_tag = f"[source:{channel}]"
+        # New user message with source + user context tag
+        user_id = (metadata or {}).get("user_id", "")
+        username = (metadata or {}).get("username", "")
+        user_info = username or user_id or "unknown"
+        source_tag = f"[Source: {channel} | User: {user_info}]"
         msgs.append({"role": "user", "content": f"{source_tag} {text}"})
 
         return msgs
 
-    def _process_message(self, channel: str, message: dict) -> str:
-        """Send message to AI provider and get response."""
+    def _check_whitelist(self, message: dict) -> bool:
+        """Check if message sender is in global whitelist. Empty whitelist = allow all."""
+        whitelist_raw = self.config.get("allowed_user_ids", "")
+        if not whitelist_raw or not whitelist_raw.strip():
+            return True  # No whitelist configured — allow everyone
+        allowed = [uid.strip() for uid in whitelist_raw.split(",") if uid.strip()]
+        if not allowed:
+            return True
+        user_id = str(message.get("user_id", ""))
+        if user_id and user_id in allowed:
+            return True
+        log.warning(f"blocked message from user_id={user_id} (not in allowed_user_ids)")
+        return False
+
+    def _process_message(self, channel: str, message: dict) -> str | None:
+        """Send message to AI provider, handle tool calls, and get final response.
+
+        Tool use loop (when enable_tools is True):
+          1. AI responds with optional [TOOL_CALL]...[/TOOL_CALL] blocks
+          2. Brain parses tool calls, executes them, appends results
+          3. AI gets another turn to process results (up to max_tool_rounds)
+          4. Final response is the text with tool call blocks stripped
+
+        Returns None if a hook blocked the message or user is not whitelisted.
+        """
+        # Global whitelist check
+        if not self._check_whitelist(message):
+            return None
+
         text = message.get("text", message.get("message", ""))
-        msgs = self._build_messages(channel, text)
+        user = message.get("user", message.get("from", ""))
+        tools_enabled = self.config.get("enable_tools", False)
+        max_rounds = self.config.get("max_tool_rounds", 5)
+
+        # Hook: on_message_in (can block processing)
+        hook_result = self.hooks.emit("on_message_in", {
+            "channel": channel,
+            "text": text,
+            "user": user,
+        })
+        if hook_result.block:
+            log.info(f"[{channel}] message blocked by hook")
+            return None
+
+        msgs = self._build_messages(channel, text, metadata=message)
+
+        # Inject hook system message if provided
+        if hook_result.system_message:
+            msgs.insert(-1, {"role": "system", "content": hook_result.system_message})
 
         try:
             response = self.provider.chat(msgs)
         except Exception as e:
             log.error(f"AI provider error: {e}")
+            self.hooks.emit("on_error", {"error": str(e), "channel": channel})
             response = f"[error] AI provider failed: {e}"
 
-        # Update conversation history
+        # ── Tool use loop ──────────────────────────────────────────
+        if tools_enabled and "[TOOL_CALL]" in response:
+            round_count = 0
+            while round_count < max_rounds:
+                tool_calls = parse_tool_calls(response)
+                if not tool_calls:
+                    break
+
+                round_count += 1
+                log.info(f"Tool round {round_count}/{max_rounds}: "
+                         f"{len(tool_calls)} call(s)")
+
+                # Execute each tool call and collect results
+                tool_results = []
+                for tc in tool_calls:
+                    tool_name = tc["name"]
+                    tool_args = tc["args"]
+                    log.info(f"  -> {tool_name}({json.dumps(tool_args, ensure_ascii=False)[:100]})")
+                    result = execute_tool(tool_name, tool_args, security=self._security)
+                    tool_results.append({
+                        "tool": tool_name,
+                        "args": tool_args,
+                        "result": result,
+                    })
+                    log.info(f"  <- {result[:100]}")
+
+                # Build tool results message
+                results_text = "\n".join(
+                    f"[TOOL_RESULT tool={tr['tool']}]\n{tr['result']}\n[/TOOL_RESULT]"
+                    for tr in tool_results
+                )
+
+                # Append AI response + tool results for next round
+                msgs.append({"role": "assistant", "content": response})
+                msgs.append({"role": "user", "content": results_text})
+
+                # Call AI again with tool results
+                try:
+                    response = self.provider.chat(msgs)
+                except Exception as e:
+                    log.error(f"AI provider error (tool round {round_count}): {e}")
+                    response = f"[error] AI provider failed during tool use: {e}"
+                    break
+
+                # If no more tool calls, we're done
+                if "[TOOL_CALL]" not in response:
+                    break
+
+            if round_count >= max_rounds and "[TOOL_CALL]" in response:
+                log.warning(f"Tool use hit max rounds ({max_rounds})")
+
+        # Strip tool call blocks from final response
+        final_response = strip_tool_calls(response) if tools_enabled else response
+
+        # Update conversation history (store clean response, not raw tool calls)
         self._conversation.append({"role": "user", "content": text})
-        self._conversation.append({"role": "assistant", "content": response})
+        self._conversation.append({"role": "assistant", "content": final_response})
         # Trim history
         if len(self._conversation) > self._max_history * 2:
             self._conversation = self._conversation[-(self._max_history * 2):]
         # Persist to disk
         self._save_conversation()
 
-        return response
+        # Hook: on_message_out
+        self.hooks.emit("on_message_out", {
+            "channel": channel,
+            "reply": final_response,
+        })
+
+        return final_response
 
     def _log_message(self, channel: str, direction: str, text: str):
         """Log message to unified message log."""
@@ -311,6 +446,12 @@ class PFBrain:
         log.info(f"Data dir: {self.data_dir}")
         log.info(f"Channels: {list(self.channel_inboxes.keys())}")
 
+        self.hooks.emit("on_start", {
+            "pid": os.getpid(),
+            "provider": self.config["ai_provider"],
+            "channels": list(self.channel_inboxes.keys()),
+        })
+
         try:
             while self.running:
                 self._write_heartbeat()
@@ -353,6 +494,10 @@ class PFBrain:
                                     log.info(f"Channel started: {ch_name} (polling thread)")
                                 else:
                                     log.info(f"Channel added: {ch_name}")
+                        self.hooks.reload(self.config)
+                        self.hooks.emit("on_reload", {
+                            "channels": list(self.channel_inboxes.keys()),
+                        })
                         log.info(f"Config reloaded. Channels: {list(self.channel_inboxes.keys())}")
                     except Exception as e:
                         log.error(f"Config reload failed: {e}")
@@ -367,6 +512,11 @@ class PFBrain:
                             self._log_message(channel, "in", text)
 
                             response = self._process_message(channel, msg)
+
+                            if response is None:
+                                # Blocked by hook — skip this message
+                                continue
+
                             log.info(f"[{channel}] reply: {response[:80]}")
                             self._log_message(channel, "out", response)
 
@@ -389,6 +539,7 @@ class PFBrain:
         except KeyboardInterrupt:
             log.info("shutting down...")
         finally:
+            self.hooks.emit("on_stop", {"loop_count": self.loop_count})
             self.running = False
             self._save_conversation()
             if self.pid_file.exists():

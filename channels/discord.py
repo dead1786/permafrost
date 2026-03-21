@@ -29,7 +29,7 @@ class PFDiscord(BaseChannel):
         {"name": "discord_channel_id", "label": "Channel ID", "type": "text",
          "help": "Right-click channel > Copy ID (enable Developer Mode)", "required": True},
         {"name": "discord_allowed_users", "label": "Allowed User IDs", "type": "text",
-         "help": "Comma-separated user IDs (empty = allow all)", "required": False},
+         "help": "Leave empty to allow everyone. Fill in User IDs (comma-separated) to restrict who can chat.", "required": False},
     ]
 
     def __init__(self, config: dict, data_dir: str = None):
@@ -128,11 +128,15 @@ class PFDiscord(BaseChannel):
                         continue
                     text = msg.get("content", "")
                     if text:
+                        author = msg.get("author", {})
                         self.write_to_inbox(text, {
-                            "author_id": msg.get("author", {}).get("id", ""),
-                            "author_name": msg.get("author", {}).get("username", ""),
+                            "source": "discord",
+                            "user_id": author.get("id", ""),
+                            "username": author.get("username", ""),
+                            "chat_type": "guild" if msg.get("guild_id") else "dm",
                             "channel_id": msg.get("channel_id", ""),
                             "message_id": msg["id"],
+                            "guild_id": msg.get("guild_id", ""),
                         })
                         log.info(f"received: {text[:80]}")
                 time.sleep(self.poll_interval)

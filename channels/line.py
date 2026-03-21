@@ -26,12 +26,12 @@ class PFLine(BaseChannel):
 
     LABEL = "LINE"
     CONFIG_FIELDS = [
-        {"name": "line_channel_secret", "label": "Channel Secret", "type": "password",
-         "help": "From LINE Developers console > Messaging API", "required": True},
         {"name": "line_access_token", "label": "Channel Access Token", "type": "password",
          "help": "Long-lived token from LINE Developers console", "required": True},
+        {"name": "line_channel_secret", "label": "Channel Secret", "type": "password",
+         "help": "Optional. Needed for webhook signature verification.", "required": False},
         {"name": "line_user_id", "label": "Your User ID", "type": "text",
-         "help": "Your LINE user ID for direct messaging", "required": True},
+         "help": "Optional. Your LINE user ID for push messaging. If empty, replies use reply tokens only.", "required": False},
     ]
 
     def __init__(self, config: dict, data_dir: str = None):
@@ -52,13 +52,14 @@ class PFLine(BaseChannel):
     def validate(self) -> tuple[bool, str]:
         if not self.access_token:
             return False, "LINE Channel Access Token is required"
-        if not self.user_id:
-            return False, "LINE User ID is required"
         return True, ""
 
     def send_message(self, text: str, **kwargs) -> bool:
         """Send a push message to the user."""
         user_id = kwargs.get("user_id", self.user_id)
+        if not user_id:
+            log.warning("send_message failed: no user_id configured or provided")
+            return False
         # LINE has a 5000 char limit per text message
         chunks = [text[i:i + 5000] for i in range(0, len(text), 5000)]
         for chunk in chunks:
@@ -108,6 +109,51 @@ class PFLine(BaseChannel):
             # Fall through to push if reply fails (token may have expired)
 
         self.send_message(response)
+
+    def process_webhook_event(self, event: dict):
+        """Process a LINE webhook event and write to inbox with full metadata.
+
+        Call this from your webhook handler (Flask/FastAPI) when a message event arrives.
+        Example event structure: https://developers.line.biz/en/reference/messaging-api/#message-event
+        """
+        if event.get("type") != "message":
+            return
+
+        message = event.get("message", {})
+        source = event.get("source", {})
+        text = message.get("text", "")
+
+        # Handle non-text message types
+        msg_type = message.get("type", "text")
+        if msg_type == "image":
+            text = f"[image:{message.get('id', '')}]"
+        elif msg_type == "sticker":
+            text = f"[sticker:{message.get('packageId', '')}:{message.get('stickerId', '')}]"
+        elif msg_type == "video":
+            text = f"[video:{message.get('id', '')}]"
+        elif msg_type == "audio":
+            text = f"[audio:{message.get('id', '')}]"
+        elif msg_type == "file":
+            text = f"[file:{message.get('fileName', '')}]"
+
+        if not text:
+            return
+
+        # Build metadata matching Telegram/Discord format
+        source_type = source.get("type", "user")  # user/group/room
+        metadata = {
+            "source": "line",
+            "user_id": source.get("userId", ""),
+            "username": "",  # LINE doesn't expose display name in webhook events
+            "chat_type": source_type,
+            "reply_token": event.get("replyToken", ""),
+            "message_id": message.get("id", ""),
+            "group_id": source.get("groupId", ""),
+            "room_id": source.get("roomId", ""),
+        }
+
+        self.write_to_inbox(text, metadata)
+        log.info(f"webhook received: {text[:80]}")
 
     def run(self):
         """LINE uses webhooks for receiving — poll-based fallback not available.

@@ -67,7 +67,7 @@ class PFTelegram(BaseChannel):
         if not self.bot_token:
             return False, "Telegram Bot Token is required"
         if not self.chat_id:
-            return False, "Chat ID not detected. Send /start to your bot on Telegram, then restart."
+            log.info("No chat_id yet — will auto-bind on first message")
         return True, ""
 
     def send_message(self, text: str, **kwargs) -> bool:
@@ -154,8 +154,23 @@ class PFTelegram(BaseChannel):
         return []
 
     def _is_authorized(self, message: dict) -> bool:
-        """Check if message is from authorized user."""
+        """Check if message is from authorized user. Auto-binds on first message."""
         msg_chat_id = str(message.get("chat", {}).get("id", ""))
+        if not self.chat_id:
+            # First message — auto-bind this user
+            self.chat_id = msg_chat_id
+            log.info(f"Auto-bound chat_id: {self.chat_id}")
+            # Save to config so it persists
+            try:
+                import json
+                config_file = self.data_dir / "config.json"
+                if config_file.exists():
+                    cfg = json.loads(config_file.read_text(encoding="utf-8"))
+                    cfg["telegram_chat_id"] = self.chat_id
+                    config_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+            except Exception as e:
+                log.warning(f"Failed to save chat_id: {e}")
+            return True
         return msg_chat_id == self.chat_id
 
     def _process_update(self, update: dict):
