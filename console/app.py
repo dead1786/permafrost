@@ -69,11 +69,19 @@ header[data-testid="stHeader"] { display: none !important; }
 }
 .brand { font-size: 2.5em; font-weight: bold; }
 .tagline { color: #888; font-size: 1.1em; margin-bottom: 2rem; }
-/* No flash/transition on rerun */
-.stApp, .main, section[data-testid="stMain"],
-[data-testid="stVerticalBlock"], [data-testid="stChatMessage"] {
+/* Kill ALL Streamlit transitions/animations — prevents flicker on rerun */
+*, *::before, *::after,
+.stApp, .main, .block-container,
+section[data-testid="stMain"],
+[data-testid="stVerticalBlock"],
+[data-testid="stChatMessage"],
+[data-testid="stMarkdownContainer"],
+[data-testid="stTab"],
+[data-testid="stExpander"],
+.element-container, .stTabs {
     transition: none !important;
     animation: none !important;
+    opacity: 1 !important;
 }
 /* Fixed chat input at bottom */
 div[data-testid="stChatInput"] {
@@ -607,15 +615,11 @@ def render_schedule():
 # Status
 # ══════════════════════════════════════════
 def render_status():
-    # Auto-refresh every 10 seconds
-    import time as _time
-    if "last_status_refresh" not in st.session_state:
-        st.session_state.last_status_refresh = _time.time()
-    if _time.time() - st.session_state.last_status_refresh > 10:
-        st.session_state.last_status_refresh = _time.time()
-        st.rerun()
-
     st.markdown(f"### \U0001f4ca {t('system_status', _lang)}")
+
+    # Manual refresh button instead of auto-rerun (prevents Chat flickering)
+    if st.button(f"\U0001f504 Refresh", key="status_refresh"):
+        pass  # Streamlit re-executes on button click
 
     col1, col2, col3 = st.columns(3)
 
