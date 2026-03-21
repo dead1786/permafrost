@@ -351,6 +351,8 @@ class EchoProvider(BaseProvider):
     MODEL_HELP = "Free testing mode — no API key needed, no cost"
 
     def chat(self, messages: list[dict], **kwargs) -> str:
+        import re as _re
+
         # Get the last user message
         user_msg = ""
         for m in reversed(messages):
@@ -358,19 +360,29 @@ class EchoProvider(BaseProvider):
                 user_msg = m.get("content", "")
                 break
 
-        # Check if this is a tool result round
+        # Check if this is a tool result round — parse and display results
         if "[TOOL_RESULT" in user_msg:
-            return f"Got the tool results. Let me summarize: the tool executed successfully."
+            results = _re.findall(r'\[TOOL_RESULT tool=(\w+)\]\n(.*?)\n\[/TOOL_RESULT\]', user_msg, _re.DOTALL)
+            if results:
+                parts = []
+                for tool_name, output in results:
+                    parts.append(f"**{tool_name}** result:\n{output.strip()[:300]}")
+                return "Here's what I found:\n\n" + "\n\n".join(parts)
+            return "Tool executed successfully."
 
-        # Smart echo with tool use demonstration
-        lower = user_msg.lower()
+        # Strip source tag before keyword matching (prevents false matches like "unknown" -> "now")
+        clean_msg = _re.sub(r'\[Source:.*?\]\s*', '', user_msg)
+        lower = clean_msg.lower()
+
+        # Use clean message (no source tag) for tool args too
+        safe_msg = clean_msg.replace('"', '\\"')[:100]
 
         # Demonstrate tool use when appropriate keywords detected
         if any(kw in lower for kw in ["remember", "save", "note", "record"]):
             return (
                 f"I'll save that to memory.\n\n"
                 f"[TOOL_CALL]\n"
-                f'{{"name": "memory_note", "args": {{"key": "user_note", "value": "{user_msg[:100]}", "type": "context"}}}}\n'
+                f'{{"name": "memory_note", "args": {{"key": "user_note", "value": "{safe_msg}", "type": "context"}}}}\n'
                 f"[/TOOL_CALL]"
             )
 
@@ -378,7 +390,7 @@ class EchoProvider(BaseProvider):
             return (
                 f"Let me search my memory.\n\n"
                 f"[TOOL_CALL]\n"
-                f'{{"name": "memory_search", "args": {{"query": "{user_msg[:50]}"}}}}\n'
+                f'{{"name": "memory_search", "args": {{"query": "{safe_msg}"}}}}\n'
                 f"[/TOOL_CALL]"
             )
 
@@ -390,7 +402,7 @@ class EchoProvider(BaseProvider):
                 f"[/TOOL_CALL]"
             )
 
-        if any(kw in lower for kw in ["time", "date", "now"]):
+        if any(kw in lower for kw in ["time", "date"]):
             return (
                 f"[TOOL_CALL]\n"
                 f'{{"name": "python_exec", "args": {{"code": "from datetime import datetime; print(datetime.now())"}}}}\n'

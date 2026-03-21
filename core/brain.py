@@ -27,7 +27,7 @@ from pathlib import Path
 
 from .hooks import HookManager
 from .providers import create_provider, BaseProvider
-from .tools import execute_tool, get_tool_prompt, parse_tool_calls, strip_tool_calls
+from .tools import execute_tool, get_tool_prompt, parse_tool_calls, strip_tool_calls, has_tool_calls
 from .compactor import PFCompactor
 from .agents import PFAgentManager, agent_memory_maintenance, agent_context_extractor, agent_health_check
 from .plugins import PFPluginManager
@@ -232,7 +232,12 @@ class PFBrain:
             )
 
     def _setup_signal_handlers(self):
-        """Register graceful shutdown handlers."""
+        """Register graceful shutdown handlers (main thread only)."""
+        import threading
+        if threading.current_thread() is not threading.main_thread():
+            log.debug("Not main thread, skipping signal handlers")
+            return
+
         def handler(signum, frame):
             log.info(f"received signal {signum}, shutting down...")
             self.running = False
@@ -440,7 +445,7 @@ class PFBrain:
             response = f"[error] AI provider failed: {e}"
 
         # ── Tool use loop ──────────────────────────────────────────
-        if tools_enabled and "[TOOL_CALL]" in response:
+        if tools_enabled and has_tool_calls(response):
             round_count = 0
             while round_count < max_rounds:
                 tool_calls = parse_tool_calls(response)
@@ -484,10 +489,10 @@ class PFBrain:
                     break
 
                 # If no more tool calls, we're done
-                if "[TOOL_CALL]" not in response:
+                if not has_tool_calls(response):
                     break
 
-            if round_count >= max_rounds and "[TOOL_CALL]" in response:
+            if round_count >= max_rounds and has_tool_calls(response):
                 log.warning(f"Tool use hit max rounds ({max_rounds})")
 
         # Strip tool call blocks from final response

@@ -408,11 +408,14 @@ def get_tool_prompt() -> str:
 
     lines.extend([
         "",
-        "To use a tool, write:",
+        "IMPORTANT: To use a tool, you MUST use EXACTLY this format (no variations):",
         '[TOOL_CALL]{"name": "tool_name", "args": {"key": "value"}}[/TOOL_CALL]',
         "",
-        "You can use multiple tools in sequence. After each tool call, you'll receive the result and can continue.",
-        "Always use tools when asked to interact with files, run commands, or search for information.",
+        "Rules:",
+        "- The tag MUST be [TOOL_CALL] and [/TOOL_CALL], not [TOOL_CODE] or any other variant.",
+        "- The JSON must be valid with double quotes.",
+        "- You can use multiple tools in sequence. After each tool call, you'll receive the result.",
+        "- Always use tools when asked to interact with files, run commands, or search for information.",
     ])
     return "\n".join(lines)
 
@@ -421,6 +424,11 @@ def get_tool_prompt() -> str:
 
 _TOOL_CALL_PATTERN = re.compile(
     r"\[TOOL_CALL\]\s*(\{.*?\})\s*\[/TOOL_CALL\]",
+    re.DOTALL,
+)
+# Also match common AI variants: [TOOL_CODE], [tool_call], etc.
+_TOOL_CALL_VARIANTS = re.compile(
+    r"\[(?:TOOL_CALL|TOOL_CODE|tool_call|tool_code)\]\s*(\{.*?\})\s*\[/(?:TOOL_CALL|TOOL_CODE|tool_call|tool_code)\]",
     re.DOTALL,
 )
 
@@ -432,7 +440,11 @@ def parse_tool_calls(text: str) -> list[dict]:
     Invalid JSON blocks are skipped with a warning.
     """
     calls = []
-    for match in _TOOL_CALL_PATTERN.finditer(text):
+    # Try standard format first, then variants (TOOL_CODE, etc.)
+    matches = list(_TOOL_CALL_PATTERN.finditer(text))
+    if not matches:
+        matches = list(_TOOL_CALL_VARIANTS.finditer(text))
+    for match in matches:
         raw = match.group(1)
         try:
             data = json.loads(raw)
@@ -447,10 +459,17 @@ def parse_tool_calls(text: str) -> list[dict]:
     return calls
 
 
+def has_tool_calls(text: str) -> bool:
+    """Check if text contains any tool call blocks (standard or variant)."""
+    return bool(_TOOL_CALL_PATTERN.search(text) or _TOOL_CALL_VARIANTS.search(text))
+
+
 def strip_tool_calls(text: str) -> str:
-    """Remove [TOOL_CALL]...[/TOOL_CALL] blocks from text.
+    """Remove [TOOL_CALL]...[/TOOL_CALL] blocks from text (and variants).
 
     Returns the text with tool call blocks removed,
     so the final response to the user is clean.
     """
-    return _TOOL_CALL_PATTERN.sub("", text).strip()
+    result = _TOOL_CALL_PATTERN.sub("", text)
+    result = _TOOL_CALL_VARIANTS.sub("", result)
+    return result.strip()
