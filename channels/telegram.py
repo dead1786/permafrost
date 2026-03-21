@@ -167,11 +167,19 @@ class PFTelegram(BaseChannel):
         if not self._is_authorized(message):
             return
 
-        # Extract text
+        # Extract text and user info
         text = message.get("text", "")
+        user = message.get("from", {})
+        chat = message.get("chat", {})
         metadata = {
-            "chat_id": str(message.get("chat", {}).get("id", "")),
+            "source": "telegram",
+            "chat_id": str(chat.get("id", "")),
             "message_id": message.get("message_id"),
+            "user_id": str(user.get("id", "")),
+            "username": user.get("username", ""),
+            "first_name": user.get("first_name", ""),
+            "last_name": user.get("last_name", ""),
+            "chat_type": chat.get("type", ""),  # private/group/supergroup
         }
 
         # Handle photos
