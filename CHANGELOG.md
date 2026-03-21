@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.1 (2026-03-21)
+
+### Fixed
+- Brain writes heartbeat immediately on start (prevents watchdog false restart)
+- PID lock prevents duplicate brain processes
+- All provider SDKs included in requirements.txt (users no longer hit missing module errors)
+
 ## v0.2.0 (2026-03-21)
 
 ### Added

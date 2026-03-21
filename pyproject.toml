@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "permafrost"
-version = "1.0.0"
+version = "0.2.1"
 description = "Permafrost — Open-source AI brain framework with multi-provider, multi-channel support."
 readme = "README.md"
 license = {text = "MIT"}
