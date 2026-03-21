@@ -40,20 +40,30 @@ class PFMemory:
     # ── L1: Core Rules ──────────────────────────────────────────
 
     def ensure_l1_defaults(self):
-        """Always overwrite L1 defaults with latest templates.
+        """Update L1 with latest framework templates + preserve AI custom rules.
 
-        L1 rules are framework-managed (not user-editable).
-        This ensures AI always gets the latest tool list and behavior rules.
+        L1 has two parts:
+        - Framework rules (rules.md, tools.md) — always overwritten with latest
+        - AI custom rules (my_rules.md) — written by AI itself, NEVER overwritten
         """
         from smart.rules_template import RULES_TEMPLATE, TOOLS_TEMPLATE
 
         l1 = self.memory_dir / "L1"
 
-        rules_file = l1 / "rules.md"
-        rules_file.write_text(RULES_TEMPLATE, encoding="utf-8")
+        # Framework-managed (always overwrite)
+        (l1 / "rules.md").write_text(RULES_TEMPLATE, encoding="utf-8")
+        (l1 / "tools.md").write_text(TOOLS_TEMPLATE, encoding="utf-8")
 
-        tools_file = l1 / "tools.md"
-        tools_file.write_text(TOOLS_TEMPLATE, encoding="utf-8")
+        # AI-managed (create only if missing, never overwrite)
+        my_rules = l1 / "my_rules.md"
+        if not my_rules.exists():
+            my_rules.write_text(
+                "# My Rules (AI Self-Managed)\n\n"
+                "Rules I learned from experience. I can update this file myself.\n\n"
+                "## Learned Rules\n\n"
+                "(none yet — use update_rules tool to add)\n",
+                encoding="utf-8",
+            )
 
     def load_l1(self) -> str:
         """Load all L1 rules as a single text block."""

@@ -47,6 +47,7 @@ DEFAULT_TOOL_WHITELIST = {
         "memory_list", "memory_gc", "memory_reindex", "memory_stats",
         "set_reminder", "list_reminders", "delete_reminder",
         "send_notification", "create_tool",
+        "update_rules", "read_rules",
         "create_pdf", "create_spreadsheet", "read_spreadsheet",
         "create_document", "read_pdf", "read_image", "resize_image",
         "download_file", "system_info", "process_list", "kill_process",

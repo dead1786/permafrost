@@ -1124,7 +1124,46 @@ def tool_resize_image(path: str, output: str, width: int = 800, height: int = 0,
         return f"[error] {e}"
 
 
-# ── Self-Tool-Creation (Meta-Tool) ───────────────────────────
+# ── Self-Evolution (Rules + Tools) ────────────────────────────
+
+@register_tool("update_rules", "Add or update a self-learned rule (persists across restarts)", {
+    "rule": {"type": "string", "description": "The rule to add (e.g. 'Always confirm before deleting files')"},
+    "category": {"type": "string", "description": "Category: learned, correction, preference, pitfall"},
+})
+def tool_update_rules(rule: str, category: str = "learned", **kwargs) -> str:
+    """AI adds a rule to its own my_rules.md file. These persist and are loaded every session."""
+    from pathlib import Path
+    from datetime import datetime
+    data_dir = Path(os.path.expanduser("~/.permafrost"))
+    rules_file = data_dir / "memory" / "L1" / "my_rules.md"
+    try:
+        content = ""
+        if rules_file.exists():
+            content = rules_file.read_text(encoding="utf-8")
+        # Remove placeholder if present
+        content = content.replace("(none yet — use update_rules tool to add)\n", "")
+        # Add the new rule
+        entry = f"- [{category}] {rule} ({datetime.now().strftime('%Y-%m-%d')})\n"
+        if entry.strip() in content:
+            return f"Rule already exists: {rule[:60]}"
+        content += entry
+        rules_file.write_text(content, encoding="utf-8")
+        return f"Rule added [{category}]: {rule[:80]}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("read_rules", "Read your current self-learned rules", {})
+def tool_read_rules(**kwargs) -> str:
+    """Read AI's own custom rules file."""
+    from pathlib import Path
+    rules_file = Path(os.path.expanduser("~/.permafrost")) / "memory" / "L1" / "my_rules.md"
+    if not rules_file.exists():
+        return "No custom rules yet."
+    return rules_file.read_text(encoding="utf-8")[:4000]
+
+
+# ── Self-Tool-Creation ───────────────────────────────────────
 
 @register_tool("create_tool", "Create a new custom tool that persists across restarts", {
     "name": {"type": "string", "description": "Tool name (snake_case, e.g. 'weather_check')"},
