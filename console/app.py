@@ -105,25 +105,25 @@ def is_configured():
     return bool(config.get("ai_provider") and config.get("api_key"))
 
 
+# ── Global language ──
+_lang = get_lang()
+
 # ── Navigation ──
 if "page" not in st.session_state:
     st.session_state.page = "chat" if is_configured() else "setup"
 
 if is_configured():
-    _lang = get_lang()
-    c1, c2, c3, c4 = st.columns(4)
-    if c1.button(f"\U0001f4ac {t('chat', _lang)}", use_container_width=True):
-        st.session_state.page = "chat"
-        st.rerun()
-    if c2.button(f"\U0001f4c5 {t('schedule', _lang)}", use_container_width=True):
-        st.session_state.page = "schedule"
-        st.rerun()
-    if c3.button(f"\U0001f4ca {t('status', _lang)}", use_container_width=True):
-        st.session_state.page = "status"
-        st.rerun()
-    if c4.button(f"\u2699\ufe0f {t('settings', _lang)}", use_container_width=True):
-        st.session_state.page = "setup"
-        st.rerun()
+    tab_chat, tab_schedule, tab_status, tab_settings = st.tabs([
+        f"\U0001f4ac {t('chat', _lang)}",
+        f"\U0001f4c5 {t('schedule', _lang)}",
+        f"\U0001f4ca {t('status', _lang)}",
+        f"\u2699\ufe0f {t('settings', _lang)}",
+    ])
+else:
+    tab_chat = None
+    tab_schedule = None
+    tab_status = None
+    tab_settings = None
 
 page = st.session_state.page
 if not is_configured():
@@ -131,16 +131,16 @@ if not is_configured():
 
 
 # ══════════════════════════════════════════
-# Setup Wizard
+# Setup Wizard (shown when not configured, or via settings tab)
 # ══════════════════════════════════════════
-if page == "setup":
+def render_setup():
     st.markdown('<div class="brand">\u2744\ufe0f Permafrost</div>', unsafe_allow_html=True)
-    st.markdown('<div class="tagline">Turn any AI into a 24/7 autonomous brain.</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="tagline">{t("tagline", _lang)}</div>', unsafe_allow_html=True)
 
     config = load_config()
 
     # ── Step 1: AI Model (dynamic from provider registry) ──
-    st.markdown("### Step 1: Choose your AI model")
+    st.markdown(f"### {t('step1_model', _lang)}")
 
     providers = list_providers()
     provider_labels = [p["label"] for p in providers]
@@ -149,31 +149,31 @@ if page == "setup":
     current = config.get("ai_provider", "claude")
     current_idx = provider_names.index(current) if current in provider_names else 0
 
-    selected_label = st.selectbox("AI Provider", provider_labels, index=current_idx)
+    selected_label = st.selectbox(t("ai_provider_label", _lang), provider_labels, index=current_idx)
     selected_idx = provider_labels.index(selected_label)
     provider_info = providers[selected_idx]
     provider = provider_info["name"]
 
     if provider_info["needs_api_key"]:
         if provider == "ollama":
-            api_key = st.text_input("Ollama endpoint",
+            api_key = st.text_input(t("ollama_endpoint", _lang),
                                      value=config.get("api_key", "http://localhost:11434"))
         else:
-            api_key = st.text_input(f"{provider_info['label']} API Key",
+            api_key = st.text_input(f"{provider_info['label']} {t('api_key', _lang)}",
                                      value=config.get("api_key", ""), type="password")
     else:
         api_key = config.get("api_key", "")
 
-    ai_model = st.text_input("Model ID",
+    ai_model = st.text_input(t("model_id", _lang),
                               value=config.get("ai_model", provider_info["default_model"]),
                               help=provider_info["model_help"])
 
-    system_prompt = st.text_area("System Prompt (optional)",
+    system_prompt = st.text_area(t("system_prompt", _lang),
                                   value=config.get("system_prompt", ""),
-                                  help="Instructions for the AI brain. Leave empty for default behavior.")
+                                  help=t("system_prompt_help", _lang))
 
     # ── Step 2: Channels (dynamic from channel registry) ──
-    st.markdown("### Step 2: Connect channels")
+    st.markdown(f"### {t('step2_channels', _lang)}")
 
     channels_info = list_channels()
     channel_configs = {}
@@ -207,8 +207,8 @@ if page == "setup":
                     channel_configs[field_key] = val
 
     # ── Step 3: AI Persona ──
-    st.markdown("### Step 3: Create your AI persona")
-    st.caption("Answer a few questions and we'll build a personality for your AI.")
+    st.markdown(f"### {t('step3_persona', _lang)}")
+    st.caption(t("step3_caption", _lang))
 
     from smart.persona_wizard import DEFAULT_QUESTIONS, build_system_prompt
 
@@ -224,56 +224,56 @@ if page == "setup":
 
     # Show preview if enough answers
     if persona_answers.get("name") and persona_answers.get("role"):
-        with st.expander("Preview generated system prompt"):
+        with st.expander(t("preview_prompt", _lang)):
             preview = build_system_prompt(persona_answers)
             st.code(preview, language=None)
 
     # Allow manual override
     system_prompt_override = st.text_area(
-        "Or write your own system prompt (overrides wizard)",
+        t("manual_prompt", _lang),
         value=config.get("system_prompt", ""),
-        help="Leave empty to use the wizard-generated prompt above.")
+        help=t("manual_prompt_help", _lang))
 
     # ── Step 4: Security Level ──
-    st.markdown("### Step 4: Security level")
+    st.markdown(f"### {t('step4_security', _lang)}")
 
     from core.security import SecurityLevel
     security_options = {
-        "Strict (recommended)": "strict",
-        "Standard": "standard",
-        "Relaxed": "relaxed",
+        t("sec_strict", _lang): "strict",
+        t("sec_standard", _lang): "standard",
+        t("sec_relaxed", _lang): "relaxed",
     }
     current_sec = config.get("security_level", "strict")
     sec_labels = list(security_options.keys())
     sec_values = list(security_options.values())
     sec_idx = sec_values.index(current_sec) if current_sec in sec_values else 0
-    selected_sec = st.selectbox("Security Level", sec_labels, index=sec_idx,
-                                help="Strict: deny by default. Standard: common tools allowed. Relaxed: most allowed.")
+    selected_sec = st.selectbox(t("security_level", _lang), sec_labels, index=sec_idx,
+                                help=t("security_help", _lang))
     security_level = security_options[selected_sec]
 
     # ── Step 5: Preferences ──
-    st.markdown("### Step 5: Preferences")
+    st.markdown(f"### {t('step5_preferences', _lang)}")
 
     # Language selector
     lang_labels = list(SUPPORTED_LANGUAGES.values())
     lang_codes = list(SUPPORTED_LANGUAGES.keys())
     current_lang = config.get("language", "en")
     lang_idx = lang_codes.index(current_lang) if current_lang in lang_codes else 0
-    selected_lang_label = st.selectbox("Language", lang_labels, index=lang_idx,
-                                        help="UI display language")
+    selected_lang_label = st.selectbox(t("language", _lang), lang_labels, index=lang_idx,
+                                        help=t("lang_help", _lang))
     selected_lang = lang_codes[lang_labels.index(selected_lang_label)]
 
-    night_start = st.text_input("Night silence start", value=config.get("night_start", "00:00"))
-    night_end = st.text_input("Night silence end", value=config.get("night_end", "08:00"))
+    night_start = st.text_input(t("night_start", _lang), value=config.get("night_start", "00:00"))
+    night_end = st.text_input(t("night_end", _lang), value=config.get("night_end", "08:00"))
 
     # ── Save ──
-    if st.button("\U0001f680 Launch Permafrost", type="primary", use_container_width=True):
+    if st.button(f"\U0001f680 {t('launch', _lang)}", type="primary", use_container_width=True):
         # Validate required fields
         errors = []
         if provider_info["needs_api_key"] and not api_key:
-            errors.append(f"{provider_info['label']} API Key is required")
+            errors.append(f"{provider_info['label']} {t('api_key', _lang)} {t('is_required', _lang)}")
         if not ai_model:
-            errors.append("Model ID is required")
+            errors.append(t("model_required", _lang))
 
         # Validate channel configs
         for ch in channels_info:
@@ -281,7 +281,7 @@ if page == "setup":
             if channel_configs.get(key_enabled, False):
                 for field in ch.get("config_fields", []):
                     if field.get("required") and not channel_configs.get(field["name"]):
-                        errors.append(f"{ch['label']}: {field['label']} is required")
+                        errors.append(f"{ch['label']}: {field['label']} {t('is_required', _lang)}")
 
         if errors:
             for err in errors:
@@ -308,7 +308,7 @@ if page == "setup":
                 new_config[f"persona_{q_id}"] = ans
             new_config.update(channel_configs)
             save_config(new_config)
-            st.success("\u2705 Configuration saved! Permafrost is starting...")
+            st.success(f"\u2705 {t('config_saved', _lang)}")
             st.balloons()
             st.session_state.page = "chat"
             st.rerun()
@@ -317,8 +317,8 @@ if page == "setup":
 # ══════════════════════════════════════════
 # Chat
 # ══════════════════════════════════════════
-elif page == "chat":
-    st.markdown("### \U0001f4ac Chat")
+def render_chat():
+    st.markdown(f"### \U0001f4ac {t('chat_title', _lang)}")
 
     # Load chat history
     chat_file = DATA_DIR / "chat-history.json"
@@ -332,7 +332,7 @@ elif page == "chat":
     # Clear chat button
     col1, col2 = st.columns([8, 1])
     with col2:
-        if st.button("Clear", key="clear_chat"):
+        if st.button(t("clear", _lang), key="clear_chat"):
             st.session_state.messages = []
             try:
                 chat_file.write_text("[]", encoding="utf-8")
@@ -347,7 +347,7 @@ elif page == "chat":
             st.write(msg["content"])
 
     # Input
-    if prompt := st.chat_input("Type a message..."):
+    if prompt := st.chat_input(t("type_message", _lang)):
         # Show user message immediately
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
@@ -388,7 +388,7 @@ elif page == "chat":
         sent_at = datetime.now().isoformat()
         with st.chat_message("assistant", avatar=str(LOGO_PATH)):
             placeholder = st.empty()
-            placeholder.write("\u23f3 Thinking...")
+            placeholder.write(f"\u23f3 {t('thinking', _lang)}")
             response = None
             for _ in range(60):  # wait up to 60 seconds
                 outbox = safe_read_json(outbox_file)
@@ -420,15 +420,15 @@ elif page == "chat":
                     except OSError:
                         pass
             else:
-                placeholder.write("\u26a0\ufe0f No response from brain. Is it running?")
+                placeholder.write(f"\u26a0\ufe0f {t('no_response', _lang)}")
             st.rerun()
 
 
 # ══════════════════════════════════════════
 # Schedule
 # ══════════════════════════════════════════
-elif page == "schedule":
-    st.markdown("### \U0001f4c5 Scheduled Tasks")
+def render_schedule():
+    st.markdown(f"### \U0001f4c5 {t('scheduled_tasks', _lang)}")
 
     schedule_file = DATA_DIR / "schedule.json"
     if schedule_file.exists():
@@ -436,28 +436,28 @@ elif page == "schedule":
             schedule = safe_read_json(schedule_file)
             tasks = schedule.get("tasks", schedule) if isinstance(schedule, dict) else schedule
             if isinstance(tasks, list) and tasks:
-                for t in tasks:
-                    if isinstance(t, dict):
-                        enabled = "\U0001f7e2" if t.get("enabled", True) else "\U0001f534"
-                        sched = t.get("schedule", {})
+                for task in tasks:
+                    if isinstance(task, dict):
+                        enabled = "\U0001f7e2" if task.get("enabled", True) else "\U0001f534"
+                        sched = task.get("schedule", {})
                         sched_str = sched.get("cron", sched.get("time", sched.get("type", "")))
-                        st.markdown(f"{enabled} **{t.get('id', '?')}** — "
-                                    f"{t.get('description', '')[:60]} `{sched_str}`")
+                        st.markdown(f"{enabled} **{task.get('id', '?')}** — "
+                                    f"{task.get('description', '')[:60]} `{sched_str}`")
             else:
-                st.info("No tasks configured yet.")
+                st.info(t("no_tasks", _lang))
         except (json.JSONDecodeError, OSError):
-            st.info("No schedule file found.")
+            st.info(t("no_schedule_file", _lang))
     else:
-        st.info("No schedule file found. Tasks will appear here once configured.")
+        st.info(t("no_schedule_file", _lang))
 
     st.markdown("---")
-    st.markdown("*Task management UI coming in Phase 2.1*")
+    st.markdown(f"*{t('task_mgmt_coming', _lang)}*")
 
 
 # ══════════════════════════════════════════
 # Status
 # ══════════════════════════════════════════
-elif page == "status":
+def render_status():
     # Auto-refresh every 10 seconds
     import time as _time
     if "last_status_refresh" not in st.session_state:
@@ -466,7 +466,7 @@ elif page == "status":
         st.session_state.last_status_refresh = _time.time()
         st.rerun()
 
-    st.markdown("### \U0001f4ca System Status")
+    st.markdown(f"### \U0001f4ca {t('system_status', _lang)}")
 
     col1, col2, col3 = st.columns(3)
 
@@ -476,14 +476,14 @@ elif page == "status":
         try:
             hb = safe_read_json(hb_file, {})
             age = (datetime.now() - datetime.fromisoformat(hb["timestamp"])).total_seconds()
-            status = "Online" if age < 180 else "Offline"
+            status = t("online", _lang) if age < 180 else t("offline", _lang)
             provider = hb.get("provider", "?")
-            col1.metric("Brain", status, f"{age:.0f}s ago")
-            col1.caption(f"Provider: {provider}")
+            col1.metric(t("brain", _lang), status, f"{age:.0f}{t('seconds_ago', _lang)}")
+            col1.caption(f"{t('provider_label', _lang)}: {provider}")
         except (json.JSONDecodeError, KeyError, OSError):
-            col1.metric("Brain", "Error", "")
+            col1.metric(t("brain", _lang), t("error", _lang), "")
     else:
-        col1.metric("Brain", "Not started", "")
+        col1.metric(t("brain", _lang), t("not_started", _lang), "")
 
     # Scheduler status
     sh_file = DATA_DIR / "scheduler-heartbeat.json"
@@ -491,19 +491,21 @@ elif page == "status":
         try:
             sh = safe_read_json(sh_file, {})
             age = (datetime.now() - datetime.fromisoformat(sh["timestamp"])).total_seconds()
-            col2.metric("Scheduler", "Online" if age < 180 else "Offline", f"{age:.0f}s ago")
+            col2.metric(t("scheduler", _lang),
+                        t("online", _lang) if age < 180 else t("offline", _lang),
+                        f"{age:.0f}{t('seconds_ago', _lang)}")
         except (json.JSONDecodeError, KeyError, OSError):
-            col2.metric("Scheduler", "Error", "")
+            col2.metric(t("scheduler", _lang), t("error", _lang), "")
     else:
-        col2.metric("Scheduler", "Not started", "")
+        col2.metric(t("scheduler", _lang), t("not_started", _lang), "")
 
     # Config
     config = load_config()
-    col3.metric("AI Provider", config.get("ai_provider", "Not set").title())
-    col3.caption(f"Model: {config.get('ai_model', 'default')}")
+    col3.metric(t("ai_provider", _lang), config.get("ai_provider", t("not_set", _lang)).title())
+    col3.caption(f"{t('model_label', _lang)}: {config.get('ai_model', 'default')}")
 
     # Channels
-    st.markdown("#### Channels")
+    st.markdown(f"#### {t('channels', _lang)}")
     channel_status = []
     for ch_info in list_channels():
         key = f"{ch_info['name']}_enabled"
@@ -514,10 +516,10 @@ elif page == "status":
     st.write(" | ".join(channel_status))
 
     # Service controls
-    st.markdown("#### Controls")
+    st.markdown(f"#### {t('controls', _lang)}")
     ctrl1, ctrl2 = st.columns(2)
     launcher_path = Path(__file__).resolve().parent.parent / "launcher.py"
-    if ctrl1.button("\U0001f680 Start Brain", use_container_width=True):
+    if ctrl1.button(f"\U0001f680 {t('start_brain', _lang)}", use_container_width=True):
         # Remove stop trigger so brain can start cleanly
         stop_trigger = DATA_DIR / "brain-stop.trigger"
         stop_trigger.unlink(missing_ok=True)
@@ -534,11 +536,11 @@ elif page == "status":
                     [sys.executable, str(launcher_path)],
                     start_new_session=True,
                 )
-            st.success("Brain launched! Refresh in a few seconds to see status.")
+            st.success(t("brain_launched", _lang))
         except Exception as e:
-            st.error(f"Launch failed: {e}")
+            st.error(f"{t('launch_failed', _lang)}: {e}")
 
-    if ctrl2.button("\U0001f6d1 Stop Brain", use_container_width=True):
+    if ctrl2.button(f"\U0001f6d1 {t('stop_brain', _lang)}", use_container_width=True):
         # Write stop trigger for graceful shutdown (brain main loop checks this)
         stop_trigger = DATA_DIR / "brain-stop.trigger"
         try:
@@ -558,14 +560,13 @@ elif page == "status":
                     import signal
                     os.kill(pid, signal.SIGTERM)
                 pid_file.unlink(missing_ok=True)
-                st.success(f"Stopped brain (PID {pid})")
+                st.success(f"{t('stopped_pid', _lang)} {pid}")
             except Exception as e:
-                st.error(f"Stop failed: {e}")
+                st.error(f"{t('stop_brain', _lang)}: {e}")
         else:
-            st.success("Stop signal sent (trigger file written)")
+            st.success(t("stop_signal_sent", _lang))
 
     # Token Usage
-    _lang = get_lang()
     st.markdown(f"#### {t('token_usage', _lang)}")
     try:
         usage = get_usage_summary()
@@ -605,7 +606,7 @@ elif page == "status":
                         f"${d.get('cost_usd', 0):.4f} |"
                     )
     except Exception:
-        st.caption("Token usage data not available.")
+        st.caption(t("token_usage_na", _lang))
 
     # Recent activity
     st.markdown(f"#### {t('recent_messages', _lang)}")
@@ -618,6 +619,22 @@ elif page == "status":
                 ts = m.get("timestamp", "")[:16]
                 st.caption(f"{icon} [{m.get('channel', '?')}] {ts} — {m.get('text', '')[:100]}")
         except (json.JSONDecodeError, OSError):
-            st.caption("Error reading message log.")
+            st.caption(t("msg_log_error", _lang))
     else:
-        st.caption("No messages yet.")
+        st.caption(t("no_messages", _lang))
+
+
+# ══════════════════════════════════════════
+# Routing: tabs mode (configured) or direct setup
+# ══════════════════════════════════════════
+if is_configured():
+    with tab_chat:
+        render_chat()
+    with tab_schedule:
+        render_schedule()
+    with tab_status:
+        render_status()
+    with tab_settings:
+        render_setup()
+else:
+    render_setup()
