@@ -498,27 +498,21 @@ class ClaudeCLIProvider(BaseProvider):
         else:
             full_prompt = user_prompt
 
-        # Pass via stdin pipe (avoids command line length limits + @file issues)
+        # Call claude CLI with explicit model + max permissions
+        cmd = [
+            "claude", "-p", full_prompt,
+            "--model", self.model,
+            "--allowedTools", "Bash,Read,Write,Edit",
+        ]
+
         result = subprocess.run(
-            ["claude", "-p", "-"],
-            input=full_prompt,
+            cmd,
             capture_output=True, text=True, timeout=self.timeout,
             encoding="utf-8", errors="replace",
         )
 
         if result.stdout.strip():
             return result.stdout.strip()
-
-        # If stdin pipe didn't work, try direct argument (shorter prompts)
-        if result.returncode != 0:
-            short_prompt = user_prompt[:2000]
-            result = subprocess.run(
-                ["claude", "-p", short_prompt],
-                capture_output=True, text=True, timeout=self.timeout,
-                encoding="utf-8", errors="replace",
-            )
-            if result.stdout.strip():
-                return result.stdout.strip()
 
         if result.stderr.strip():
             return f"[error] {result.stderr.strip()[:500]}"
