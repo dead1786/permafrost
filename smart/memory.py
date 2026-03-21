@@ -40,20 +40,20 @@ class PFMemory:
     # ── L1: Core Rules ──────────────────────────────────────────
 
     def ensure_l1_defaults(self):
-        """Create default L1 rule files if they don't exist."""
+        """Always overwrite L1 defaults with latest templates.
+
+        L1 rules are framework-managed (not user-editable).
+        This ensures AI always gets the latest tool list and behavior rules.
+        """
         from smart.rules_template import RULES_TEMPLATE, TOOLS_TEMPLATE
 
         l1 = self.memory_dir / "L1"
 
         rules_file = l1 / "rules.md"
-        if not rules_file.exists():
-            rules_file.write_text(RULES_TEMPLATE, encoding="utf-8")
-            log.info("L1: created default rules.md")
+        rules_file.write_text(RULES_TEMPLATE, encoding="utf-8")
 
         tools_file = l1 / "tools.md"
-        if not tools_file.exists():
-            tools_file.write_text(TOOLS_TEMPLATE, encoding="utf-8")
-            log.info("L1: created default tools.md")
+        tools_file.write_text(TOOLS_TEMPLATE, encoding="utf-8")
 
     def load_l1(self) -> str:
         """Load all L1 rules as a single text block."""
