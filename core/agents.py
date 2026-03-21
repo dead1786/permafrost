@@ -58,6 +58,7 @@ class PFAgentManager:
         self.config = config or {}
         self.results_file = self.data_dir / "agent-results.json"
         self.active_agents: dict[str, threading.Thread] = {}
+        self._agent_activity: dict[str, dict] = {}
         self._lock = threading.Lock()
 
     def is_running(self, agent_name: str) -> bool:
@@ -66,8 +67,12 @@ class PFAgentManager:
             thread = self.active_agents.get(agent_name)
             return thread is not None and thread.is_alive()
 
+    # Stall detection settings (learned from OpenClaw acp-spawn-parent-stream.ts)
+    STALL_TIMEOUT = 60       # Seconds with no output before warning
+    MAX_AGENT_LIFETIME = 21600  # 6 hours hard limit
+
     def run_agent(self, agent_name: str, task_func, provider=None, **kwargs):
-        """Spawn a background agent thread.
+        """Spawn a background agent thread with stall detection.
 
         Args:
             agent_name: Unique name for this agent instance
@@ -78,10 +83,14 @@ class PFAgentManager:
             log.info(f"Agent '{agent_name}' already running, skipping")
             return
 
+        # Track last activity for stall detection
+        activity = {"last": time.time(), "stall_warned": False}
+
         def _wrapper():
             result = AgentResult(agent_name, task_func.__name__)
             try:
                 log.info(f"Agent '{agent_name}' started: {task_func.__name__}")
+                activity["last"] = time.time()
                 result = task_func(str(self.data_dir), provider, **kwargs)
                 result.completed_at = datetime.now().isoformat()
                 result.success = True
@@ -94,10 +103,12 @@ class PFAgentManager:
                 self._save_result(result)
                 with self._lock:
                     self.active_agents.pop(agent_name, None)
+                    self._agent_activity.pop(agent_name, None)
 
         thread = threading.Thread(target=_wrapper, name=f"pf-agent-{agent_name}", daemon=True)
         with self._lock:
             self.active_agents[agent_name] = thread
+            self._agent_activity[agent_name] = activity
         thread.start()
 
     def _save_result(self, result: AgentResult):
@@ -129,6 +140,39 @@ class PFAgentManager:
         """Get list of currently active agent names."""
         with self._lock:
             return [name for name, t in self.active_agents.items() if t.is_alive()]
+
+    def check_stalls(self) -> list[str]:
+        """Check for stalled agents. Returns list of warning messages.
+
+        Learned from OpenClaw acp-spawn-parent-stream.ts:
+        - 60s no output → stall warning
+        - 6h lifetime → hard kill notice
+        """
+        warnings = []
+        now = time.time()
+        with self._lock:
+            for name, activity in list(self._agent_activity.items()):
+                thread = self.active_agents.get(name)
+                if not thread or not thread.is_alive():
+                    continue
+
+                elapsed = now - activity["last"]
+                total_time = now - activity.get("start", activity["last"])
+
+                # Stall detection
+                if elapsed > self.STALL_TIMEOUT and not activity.get("stall_warned"):
+                    msg = f"Agent '{name}' has produced no output for {elapsed:.0f}s"
+                    log.warning(msg)
+                    warnings.append(msg)
+                    activity["stall_warned"] = True
+
+                # Hard lifetime limit
+                if total_time > self.MAX_AGENT_LIFETIME:
+                    msg = f"Agent '{name}' exceeded {self.MAX_AGENT_LIFETIME/3600:.0f}h lifetime limit"
+                    log.error(msg)
+                    warnings.append(msg)
+
+        return warnings
 
 
 # ── Built-in Agent Tasks ──────────────────────────────────────────

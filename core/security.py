@@ -25,6 +25,167 @@ from typing import Optional
 log = logging.getLogger("permafrost.security")
 
 
+# ── Workspace Boundary (learned from OpenClaw path-policy.ts) ────
+
+def enforce_workspace_boundary(candidate_path: str, workspace_root: str) -> str:
+    """Enforce that a file path stays within the workspace boundary.
+
+    Resolves symlinks and normalizes the path, then checks it's under workspace_root.
+    Returns the resolved absolute path if safe.
+    Raises ValueError if the path escapes the workspace.
+
+    Works correctly on Windows (case-insensitive drive letters).
+    """
+    resolved = Path(candidate_path).resolve()
+    root = Path(workspace_root).resolve()
+
+    # On Windows, normalize drive letter case
+    if os.name == "nt":
+        resolved_str = str(resolved)
+        root_str = str(root)
+        if len(resolved_str) >= 2 and resolved_str[1] == ":":
+            resolved_str = resolved_str[0].upper() + resolved_str[1:]
+        if len(root_str) >= 2 and root_str[1] == ":":
+            root_str = root_str[0].upper() + root_str[1:]
+        resolved = Path(resolved_str)
+        root = Path(root_str)
+
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise ValueError(
+            f"Path '{candidate_path}' resolves to '{resolved}' which is outside "
+            f"workspace boundary '{root}'. Access denied."
+        )
+    return str(resolved)
+
+
+# ── Payload Redaction (learned from OpenClaw payload-redaction.ts) ──
+
+def redact_payload_images(obj, _seen=None):
+    """Deep-traverse a message payload and replace base64 image data with <redacted>.
+
+    Prevents base64 blobs from flooding log files.
+    Uses a set for cycle detection.
+    Returns (redacted_obj, redacted_count, total_bytes_redacted).
+    """
+    if _seen is None:
+        _seen = set()
+
+    obj_id = id(obj)
+    if obj_id in _seen:
+        return obj, 0, 0
+    _seen.add(obj_id)
+
+    count = 0
+    bytes_redacted = 0
+
+    if isinstance(obj, dict):
+        # Check for image data patterns
+        if obj.get("type") == "image" and "data" in obj and isinstance(obj["data"], str):
+            data_len = len(obj["data"])
+            if data_len > 100:  # Only redact substantial data
+                import hashlib
+                obj = {**obj, "data": "<redacted>", "_bytes": data_len, "_sha256": hashlib.sha256(obj["data"].encode()).hexdigest()[:16]}
+                count += 1
+                bytes_redacted += data_len
+        elif "mimeType" in obj and obj.get("mimeType", "").startswith("image/") and "data" in obj:
+            data_len = len(obj.get("data", ""))
+            if data_len > 100:
+                obj = {**obj, "data": "<redacted>", "_bytes": data_len}
+                count += 1
+                bytes_redacted += data_len
+        else:
+            for k, v in obj.items():
+                new_v, c, b = redact_payload_images(v, _seen)
+                if c > 0:
+                    obj[k] = new_v
+                    count += c
+                    bytes_redacted += b
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            new_item, c, b = redact_payload_images(item, _seen)
+            if c > 0:
+                obj[i] = new_item
+                count += c
+                bytes_redacted += b
+
+    return obj, count, bytes_redacted
+
+
+# ── Error Classification (learned from OpenClaw failover-error.ts) ──
+
+class FailoverReason:
+    """Typed failure reasons for provider fallback decisions."""
+    AUTH = "auth"                    # Invalid API key
+    AUTH_PERMANENT = "auth_permanent"  # Permanently revoked
+    BILLING = "billing"              # Payment required / quota exceeded
+    RATE_LIMIT = "rate_limit"        # Too many requests
+    OVERLOADED = "overloaded"        # Server overloaded (503/529)
+    TIMEOUT = "timeout"              # Request timed out
+    MODEL_NOT_FOUND = "model_not_found"  # Model doesn't exist
+    CONTEXT_OVERFLOW = "context_overflow"  # Input too long
+    FORMAT_ERROR = "format_error"    # Request format rejected
+    NETWORK = "network"              # Connection error
+    UNKNOWN = "unknown"
+
+
+def classify_provider_error(error: Exception) -> str:
+    """Classify a provider error into a FailoverReason.
+
+    Walks error cause chain, checks HTTP status codes, symbolic codes,
+    and message heuristics. Returns a FailoverReason string.
+    """
+    # Collect all error messages from the chain
+    messages = []
+    current = error
+    while current:
+        messages.append(str(current).lower())
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if current and str(current).lower() in messages:
+            break  # Prevent infinite loops
+
+    combined = " ".join(messages)
+
+    # Check for HTTP status codes in error message
+    if any(code in combined for code in ["401", "403", "unauthorized", "invalid api key", "invalid_api_key"]):
+        if "permanently" in combined or "revoked" in combined or "banned" in combined:
+            return FailoverReason.AUTH_PERMANENT
+        return FailoverReason.AUTH
+
+    if any(code in combined for code in ["402", "payment required", "billing", "credit balance",
+                                          "insufficient credit", "quota exceeded", "spending limit"]):
+        return FailoverReason.BILLING
+
+    if any(code in combined for code in ["429", "rate_limit", "rate limit", "too many requests",
+                                          "resource_exhausted", "throttled", "throttling"]):
+        return FailoverReason.RATE_LIMIT
+
+    if any(code in combined for code in ["503", "529", "overloaded", "server_overloaded",
+                                          "service unavailable", "capacity"]):
+        return FailoverReason.OVERLOADED
+
+    if any(code in combined for code in ["404", "model_not_found", "model not found",
+                                          "does not exist", "no such model"]):
+        return FailoverReason.MODEL_NOT_FOUND
+
+    if any(code in combined for code in ["context_length", "context window", "too many tokens",
+                                          "maximum context", "input too long", "token limit"]):
+        return FailoverReason.CONTEXT_OVERFLOW
+
+    if any(code in combined for code in ["timeout", "timed out", "etimedout", "deadline exceeded"]):
+        return FailoverReason.TIMEOUT
+
+    if any(code in combined for code in ["econnreset", "econnrefused", "eai_again", "epipe",
+                                          "connection reset", "connection refused", "network"]):
+        return FailoverReason.NETWORK
+
+    if any(code in combined for code in ["400", "bad request", "invalid_request", "malformed"]):
+        return FailoverReason.FORMAT_ERROR
+
+    return FailoverReason.UNKNOWN
+
+
 # ── Security Levels ──────────────────────────────────────────────
 
 class SecurityLevel(Enum):

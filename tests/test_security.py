@@ -358,5 +358,120 @@ class TestCreateSecurity(unittest.TestCase):
         self.assertEqual(sec.level, SecurityLevel.STRICT)
 
 
+class TestWorkspaceBoundary(unittest.TestCase):
+    """Test workspace path boundary enforcement (from OpenClaw path-policy.ts)."""
+
+    def setUp(self):
+        self.tmp = make_temp_dir()
+        os.makedirs(os.path.join(self.tmp, "inner"), exist_ok=True)
+
+    def tearDown(self):
+        cleanup_temp_dir(self.tmp)
+
+    def test_valid_path(self):
+        from core.security import enforce_workspace_boundary
+        inner = os.path.join(self.tmp, "inner")
+        result = enforce_workspace_boundary(inner, self.tmp)
+        self.assertEqual(os.path.normcase(result), os.path.normcase(inner))
+
+    def test_escape_blocked(self):
+        from core.security import enforce_workspace_boundary
+        inner = os.path.join(self.tmp, "inner")
+        with self.assertRaises(ValueError):
+            enforce_workspace_boundary(os.path.join(self.tmp, "..", "escape"), inner)
+
+    def test_root_allowed(self):
+        from core.security import enforce_workspace_boundary
+        result = enforce_workspace_boundary(self.tmp, self.tmp)
+        self.assertEqual(os.path.normcase(result), os.path.normcase(self.tmp))
+
+
+class TestPayloadRedaction(unittest.TestCase):
+    """Test image data redaction for logging (from OpenClaw payload-redaction.ts)."""
+
+    def test_redacts_image(self):
+        from core.security import redact_payload_images
+        payload = {"type": "image", "data": "x" * 200}
+        result, count, size = redact_payload_images(payload)
+        self.assertEqual(result["data"], "<redacted>")
+        self.assertEqual(count, 1)
+        self.assertEqual(size, 200)
+
+    def test_preserves_small_data(self):
+        from core.security import redact_payload_images
+        payload = {"type": "image", "data": "small"}
+        result, count, _ = redact_payload_images(payload)
+        self.assertEqual(result["data"], "small")
+        self.assertEqual(count, 0)
+
+    def test_nested_redaction(self):
+        from core.security import redact_payload_images
+        payload = {"msgs": [{"type": "image", "data": "a" * 300}]}
+        result, count, _ = redact_payload_images(payload)
+        self.assertEqual(count, 1)
+
+    def test_no_text_redaction(self):
+        from core.security import redact_payload_images
+        payload = {"type": "text", "data": "hello" * 50}
+        _, count, _ = redact_payload_images(payload)
+        self.assertEqual(count, 0)
+
+
+class TestErrorClassification(unittest.TestCase):
+    """Test provider error classification (from OpenClaw failover-error.ts)."""
+
+    def test_rate_limit(self):
+        from core.security import classify_provider_error, FailoverReason
+        err = Exception("429 Too many requests")
+        self.assertEqual(classify_provider_error(err), FailoverReason.RATE_LIMIT)
+
+    def test_auth(self):
+        from core.security import classify_provider_error, FailoverReason
+        err = Exception("401 Unauthorized")
+        self.assertEqual(classify_provider_error(err), FailoverReason.AUTH)
+
+    def test_billing(self):
+        from core.security import classify_provider_error, FailoverReason
+        err = Exception("402 insufficient credit balance")
+        self.assertEqual(classify_provider_error(err), FailoverReason.BILLING)
+
+    def test_overloaded(self):
+        from core.security import classify_provider_error, FailoverReason
+        err = Exception("529 Server Overloaded")
+        self.assertEqual(classify_provider_error(err), FailoverReason.OVERLOADED)
+
+    def test_model_not_found(self):
+        from core.security import classify_provider_error, FailoverReason
+        err = Exception("Model does not exist")
+        self.assertEqual(classify_provider_error(err), FailoverReason.MODEL_NOT_FOUND)
+
+    def test_timeout(self):
+        from core.security import classify_provider_error, FailoverReason
+        err = Exception("Request timed out")
+        self.assertEqual(classify_provider_error(err), FailoverReason.TIMEOUT)
+
+    def test_context_overflow(self):
+        from core.security import classify_provider_error, FailoverReason
+        err = Exception("context window exceeded, too many tokens")
+        self.assertEqual(classify_provider_error(err), FailoverReason.CONTEXT_OVERFLOW)
+
+    def test_network(self):
+        from core.security import classify_provider_error, FailoverReason
+        err = Exception("ECONNREFUSED connection refused")
+        self.assertEqual(classify_provider_error(err), FailoverReason.NETWORK)
+
+    def test_unknown(self):
+        from core.security import classify_provider_error, FailoverReason
+        err = Exception("something weird")
+        self.assertEqual(classify_provider_error(err), FailoverReason.UNKNOWN)
+
+    def test_cause_chain(self):
+        from core.security import classify_provider_error, FailoverReason
+        inner = Exception("rate_limit exceeded")
+        outer = Exception("API call failed")
+        outer.__cause__ = inner
+        self.assertEqual(classify_provider_error(outer), FailoverReason.RATE_LIMIT)
+
+
 if __name__ == "__main__":
     unittest.main()
