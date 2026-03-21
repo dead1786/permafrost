@@ -358,12 +358,17 @@ def render_chat():
         with st.chat_message(msg["role"], avatar=avatar):
             st.write(msg["content"])
 
-    # Auto-scroll anchor at bottom of chat
-    st.markdown('<div id="pf-chat-bottom"></div>', unsafe_allow_html=True)
-    st.markdown(
-        '<script>document.getElementById("pf-chat-bottom")?.scrollIntoView({behavior:"smooth"});</script>',
-        unsafe_allow_html=True,
-    )
+    # Auto-scroll to bottom of chat using components.html (can run JS)
+    import streamlit.components.v1 as _components
+    _components.html("""
+    <script>
+    const main = window.parent.document.querySelector('section.main');
+    if (main) main.scrollTop = main.scrollHeight;
+    const block = window.parent.document.querySelector('[data-testid="stVerticalBlock"]');
+    if (block) block.scrollTop = block.scrollHeight;
+    window.parent.scrollTo(0, window.parent.document.body.scrollHeight);
+    </script>
+    """, height=0)
 
     # Input
     if prompt := st.chat_input(t("type_message", _lang)):
