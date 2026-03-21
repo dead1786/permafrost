@@ -304,6 +304,59 @@ class PFBrain:
         with open(self.pid_file, "w") as f:
             f.write(str(os.getpid()))
 
+    def _process_pending_tasks(self):
+        """Process scheduled tasks from pending.json.
+
+        Scheduler writes tasks here; brain reads them, feeds to AI as
+        system-initiated messages, and clears the queue.
+        """
+        pending_file = self.data_dir / "pending.json"
+        if not pending_file.exists():
+            return
+
+        try:
+            with open(pending_file, "r", encoding="utf-8") as f:
+                tasks = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return
+
+        if not tasks:
+            return
+
+        log.info(f"Processing {len(tasks)} scheduled task(s)")
+
+        for task in tasks:
+            task_id = task.get("task_id", "unknown")
+            command = task.get("command", task.get("description", ""))
+            if not command:
+                continue
+
+            log.info(f"[scheduler] executing: {task_id}")
+
+            # Process as internal message (not from any channel)
+            msg = {
+                "text": command,
+                "source": "scheduler",
+                "user_id": "system",
+                "username": "scheduler",
+            }
+            response = self._process_message("scheduler", msg)
+
+            if response:
+                log.info(f"[scheduler] {task_id} done: {response[:80]}")
+                # Write ack
+                ack_dir = self.data_dir / "acks"
+                ack_dir.mkdir(exist_ok=True)
+                ack_file = ack_dir / f"{task_id}.ack"
+                ack_file.write_text(datetime.now().isoformat())
+
+        # Clear the queue
+        try:
+            with open(pending_file, "w", encoding="utf-8") as f:
+                json.dump([], f)
+        except OSError:
+            pass
+
     def _check_inboxes(self) -> list:
         """Check all channel inboxes for new messages. Returns list of (channel, unread, all_msgs)."""
         results = []
@@ -728,6 +781,9 @@ class PFBrain:
                         log.info(f"Config reloaded. Channels: {list(self.channel_inboxes.keys())}")
                     except Exception as e:
                         log.error(f"Config reload failed: {e}")
+
+                # Check scheduled task queue (pending.json)
+                self._process_pending_tasks()
 
                 inbox_results = self._check_inboxes()
 
