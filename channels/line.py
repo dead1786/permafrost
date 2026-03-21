@@ -125,6 +125,8 @@ class PFLine(BaseChannel):
         super().__init__(config, data_dir)
         self.channel_secret = config.get("line_channel_secret", "").strip()
         self.access_token = config.get("line_access_token", "").strip()
+        if self.access_token:
+            log.debug(f"token loaded: len={len(self.access_token)} starts={self.access_token[:10]}...")
         self.ngrok_authtoken = config.get("ngrok_authtoken", "")  # optional, only if using ngrok
         self.webhook_port = int(config.get("line_webhook_port", 8504))
         self.api_base = "https://api.line.me/v2/bot"
