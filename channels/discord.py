@@ -122,6 +122,12 @@ class PFDiscord(BaseChannel):
         self.running = True
         log.info(f"started polling (channel_id={self.channel_id})")
 
+        # Skip old messages on startup — only process new ones
+        initial_msgs = self._get_messages()
+        if initial_msgs:
+            self.last_message_id = initial_msgs[0]["id"]  # newest first
+            log.info(f"skipped {len(initial_msgs)} old messages on startup")
+
         try:
             while self.running:
                 messages = self._get_messages()
