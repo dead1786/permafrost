@@ -1719,7 +1719,7 @@ def parse_tool_calls(text: str) -> list[dict]:
 
 def has_tool_calls(text: str) -> bool:
     """Check if text contains any tool call blocks (standard or variant)."""
-    return bool(_TOOL_CALL_PATTERN.search(text) or _TOOL_CALL_VARIANTS.search(text))
+    return bool(_TOOL_CALL_PATTERN.search(text) or _TOOL_CALL_ANY.search(text))
 
 
 def strip_tool_calls(text: str) -> str:

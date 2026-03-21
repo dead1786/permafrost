@@ -247,9 +247,27 @@ def render_setup():
     else:
         api_key = config.get("api_key", "")
 
-    ai_model = st.text_input(t("model_id", _lang),
-                              value=config.get("ai_model", provider_info["default_model"]),
-                              help=provider_info["model_help"])
+    # Model selector: dropdown if known models available, text input for custom
+    known_models = provider_info.get("known_models", [])
+    current_model = config.get("ai_model", provider_info["default_model"])
+    if known_models:
+        options = known_models + ["(custom)"]
+        if current_model in known_models:
+            default_idx = known_models.index(current_model)
+        else:
+            default_idx = 0
+        selected_model = st.selectbox(
+            t("model_id", _lang), options, index=default_idx,
+            help=provider_info["model_help"],
+        )
+        if selected_model == "(custom)":
+            ai_model = st.text_input("Custom model ID", value=current_model)
+        else:
+            ai_model = selected_model
+    else:
+        ai_model = st.text_input(t("model_id", _lang),
+                                  value=current_model,
+                                  help=provider_info["model_help"])
 
     system_prompt = st.text_area(t("system_prompt", _lang),
                                   value=config.get("system_prompt", ""),

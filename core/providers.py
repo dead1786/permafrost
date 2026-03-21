@@ -40,7 +40,8 @@ def list_providers() -> list[dict]:
     """List all registered providers with metadata."""
     return [
         {"name": name, "label": cls.LABEL, "needs_api_key": cls.NEEDS_API_KEY,
-         "default_model": cls.DEFAULT_MODEL, "model_help": cls.MODEL_HELP}
+         "default_model": cls.DEFAULT_MODEL, "model_help": cls.MODEL_HELP,
+         "known_models": cls.KNOWN_MODELS}
         for name, cls in _PROVIDERS.items()
     ]
 
@@ -54,6 +55,8 @@ class BaseProvider(ABC):
     NEEDS_API_KEY: bool = True
     DEFAULT_MODEL: str = ""
     MODEL_HELP: str = ""
+    # Known models for dropdown (override in subclass)
+    KNOWN_MODELS: list[str] = []
 
     def __init__(self, api_key: str = "", model: str = "", timeout: int = 120,
                  max_retries: int = 2, **kwargs):
@@ -155,6 +158,7 @@ class ClaudeProvider(BaseProvider):
     SUPPORTS_TOOLS = True
     DEFAULT_MODEL = "claude-sonnet-4-20250514"
     MODEL_HELP = "e.g. claude-sonnet-4-20250514, claude-opus-4-20250514"
+    KNOWN_MODELS = ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-4-5-20251001"]
 
     def chat(self, messages: list[dict], **kwargs) -> str:
         return self._retry(self._do_chat, messages, **kwargs)
@@ -257,6 +261,7 @@ class OpenAIProvider(BaseProvider):
     SUPPORTS_TOOLS = True
     DEFAULT_MODEL = "gpt-4o"
     MODEL_HELP = "e.g. gpt-4o, gpt-4o-mini, o3-mini"
+    KNOWN_MODELS = ["gpt-4o", "gpt-4o-mini", "o3-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
 
     def chat(self, messages: list[dict], **kwargs) -> str:
         return self._retry(self._do_chat, messages, **kwargs)
@@ -311,6 +316,7 @@ class GeminiProvider(BaseProvider):
     SUPPORTS_TOOLS = True
     DEFAULT_MODEL = "gemini-2.0-flash"
     MODEL_HELP = "e.g. gemini-2.0-flash, gemini-2.5-pro"
+    KNOWN_MODELS = ["gemini-2.0-flash", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-1.5-pro"]
 
     def chat(self, messages: list[dict], **kwargs) -> str:
         return self._retry(self._do_chat, messages, **kwargs)
@@ -379,6 +385,7 @@ class OllamaProvider(BaseProvider):
     NEEDS_API_KEY = False
     DEFAULT_MODEL = "llama3"
     MODEL_HELP = "e.g. llama3, mistral, codestral, gemma2"
+    KNOWN_MODELS = ["llama3", "llama3.1", "mistral", "codestral", "gemma2", "phi3", "qwen2"]
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -463,6 +470,7 @@ class ClaudeCLIProvider(BaseProvider):
     NEEDS_API_KEY = False
     DEFAULT_MODEL = "claude-sonnet-4-20250514"
     MODEL_HELP = "Uses your Claude subscription. Model: claude-sonnet-4, claude-opus-4"
+    KNOWN_MODELS = ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-4-5-20251001"]
 
     def chat(self, messages: list[dict], **kwargs) -> str:
         return self._retry(self._do_chat, messages, **kwargs)
@@ -480,7 +488,7 @@ class ClaudeCLIProvider(BaseProvider):
         prompt = "\n\n".join(parts)
 
         # Write to temp file to avoid shell escaping issues
-        import tempfile
+        import tempfile, os as _os
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False,
                                          encoding="utf-8") as f:
             f.write(prompt)
@@ -512,22 +520,46 @@ class ClaudeCLIProvider(BaseProvider):
             return "[error] No response from Claude CLI"
         finally:
             try:
-                os.unlink(tmp_path)
+                _os.unlink(tmp_path)
             except OSError:
                 pass
 
     def validate(self) -> tuple[bool, str]:
-        # Check if claude CLI is available
+        # Check if claude CLI is available and logged in
         try:
             result = subprocess.run(
                 ["claude", "--version"],
                 capture_output=True, text=True, timeout=5,
             )
-            if result.returncode == 0:
-                return True, ""
-            return False, "Claude CLI not responding"
+            if result.returncode != 0:
+                return False, (
+                    "Claude CLI not responding.\n"
+                    "Steps to fix:\n"
+                    "1. Install: npm install -g @anthropic-ai/claude-code\n"
+                    "2. Login: claude login\n"
+                    "3. Follow the browser prompt to authenticate"
+                )
+            # Check if logged in by trying a simple prompt
+            test = subprocess.run(
+                ["claude", "-p", "hi", "--output-format", "stream-json"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if test.returncode != 0 and "auth" in test.stderr.lower():
+                return False, (
+                    "Claude CLI installed but not logged in.\n"
+                    "Run in terminal: claude login\n"
+                    "Then follow the browser prompt to authenticate."
+                )
+            return True, ""
         except FileNotFoundError:
-            return False, "Claude CLI not installed. Install: npm install -g @anthropic-ai/claude-code"
+            return False, (
+                "Claude CLI not installed.\n"
+                "Steps:\n"
+                "1. Install Node.js from nodejs.org\n"
+                "2. Run: npm install -g @anthropic-ai/claude-code\n"
+                "3. Run: claude login\n"
+                "4. Follow the browser prompt"
+            )
         except Exception as e:
             return False, f"Claude CLI check failed: {e}"
 
@@ -617,6 +649,7 @@ class QwenProvider(BaseProvider):
     SUPPORTS_TOOLS = True
     DEFAULT_MODEL = "qwen-coder-plus-latest"
     MODEL_HELP = "e.g. qwen-coder-plus-latest, qwen-turbo-latest, qwen-max-latest"
+    KNOWN_MODELS = ["qwen-coder-plus-latest", "qwen-turbo-latest", "qwen-max-latest", "qwen-plus-latest"]
 
     OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
     OAUTH_BASE = "https://chat.qwen.ai"
