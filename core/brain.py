@@ -235,12 +235,28 @@ class PFBrain:
         sys_prompt = self.config.get("system_prompt", "")
         if not sys_prompt:
             sys_prompt = build_default_prompt(self.config)
+
+        # L1: Always-loaded core rules
+        from smart.memory import PFMemory
+        mem = PFMemory(str(self.data_dir))
+        mem.ensure_defaults()
+
+        l1_rules = mem.load_l1()
+        if l1_rules:
+            sys_prompt = (sys_prompt or "") + f"\n\n## Core Rules (L1)\n{l1_rules}"
+
         if self.config.get("enable_tools"):
             tool_prompt = get_tool_prompt()
             if sys_prompt:
                 sys_prompt = f"{sys_prompt}\n\n{tool_prompt}"
             else:
                 sys_prompt = tool_prompt
+
+        # L2 + L3: Memory context injection
+        memory_context = mem.get_context_block()
+        if memory_context:
+            sys_prompt = (sys_prompt or "") + f"\n\n## Your Memories (L2+L3)\n{memory_context}"
+
         if sys_prompt:
             msgs.append({"role": "system", "content": sys_prompt})
 

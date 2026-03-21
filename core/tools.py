@@ -198,6 +198,102 @@ def tool_edit_file(path: str, old_text: str, new_text: str, **kwargs) -> str:
         return f"[error] {e}"
 
 
+# ── Memory Tools (L1-L6 layered system) ──────────────────────
+
+@register_tool("memory_save", "Save information to L2 verified knowledge (long-term)", {
+    "name": {"type": "string", "description": "Memory name/title"},
+    "content": {"type": "string", "description": "Content to remember"},
+    "type": {"type": "string", "description": "Type: user/feedback/project/reference"},
+})
+def tool_memory_save(name, content, type="reference", **kwargs):
+    from smart.memory import PFMemory
+    try:
+        mem = PFMemory()
+        mem.save_l2(name, name, type, content)
+        return f"[L2] Saved: {name} ({type})"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("memory_note", "Add a short-term dynamic note to L3 (auto-expires)", {
+    "key": {"type": "string", "description": "Note key/title"},
+    "value": {"type": "string", "description": "Note content"},
+    "type": {"type": "string", "description": "Type: context(14d)/preference(30d)/progress(7d)/insight(21d)"},
+})
+def tool_memory_note(key, value, type="context", **kwargs):
+    from smart.memory import PFMemory
+    try:
+        mem = PFMemory()
+        importance = int(kwargs.get("importance", 3))
+        mem.add_l3(key, value, type, importance)
+        return f"[L3] Noted: {key} ({type})"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("memory_search", "Search across all memory layers (L2 + L3)", {
+    "query": {"type": "string", "description": "Search keywords"},
+})
+def tool_memory_search(query, **kwargs):
+    from smart.memory import PFMemory
+    mem = PFMemory()
+    results = mem.search_all(query)
+    if not results:
+        return "No memories found."
+    lines = []
+    for r in results[:10]:
+        layer = r.get("layer", "?")
+        if layer == "L2":
+            lines.append(f"[L2:{r.get('type','')}] {r.get('name','')}: {r.get('body','')[:200]}")
+        else:
+            lines.append(f"[L3:{r.get('type','')}] {r.get('key','')}: {r.get('value','')[:200]}")
+    return "\n".join(lines)
+
+
+@register_tool("memory_list", "List all saved memories across layers", {})
+def tool_memory_list(**kwargs):
+    from smart.memory import PFMemory, L2_TYPES
+    mem = PFMemory()
+    lines = []
+
+    # L2: Verified Knowledge
+    for mtype in L2_TYPES:
+        items = mem.list_l2(mtype)
+        if items:
+            lines.append(f"\n[L2:{mtype}]")
+            for i in items:
+                lines.append(f"  - {i.get('name','')}: {i.get('description','')}")
+
+    # L3: Dynamic
+    l3 = mem.list_l3()
+    if l3:
+        lines.append(f"\n[L3] ({len(l3)} entries)")
+        for e in l3[:15]:
+            lines.append(f"  - [{e.get('type','')}] {e.get('key','')}: {e.get('value','')[:80]}")
+
+    return "\n".join(lines) if lines else "No memories saved yet."
+
+
+@register_tool("memory_gc", "Run garbage collection on L3 dynamic memories (expire/promote/archive)", {})
+def tool_memory_gc(**kwargs):
+    from smart.memory import PFMemory
+    try:
+        mem = PFMemory()
+        result = mem.gc()
+        return f"GC complete: kept={result['kept']}, promoted={result['promoted']}, archived={result['archived']}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("memory_stats", "Show memory layer statistics (L1-L6)", {})
+def tool_memory_stats(**kwargs):
+    from smart.memory import PFMemory
+    mem = PFMemory()
+    stats = mem.get_stats()
+    lines = [f"  {layer}: {count}" for layer, count in stats.items()]
+    return "Memory Stats:\n" + "\n".join(lines)
+
+
 # ── Tool Executor ─────────────────────────────────────────────
 
 def execute_tool(name: str, args: dict, security=None) -> str:

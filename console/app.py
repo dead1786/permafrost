@@ -366,6 +366,21 @@ def render_setup():
             st.session_state.page = "chat"
             st.rerun()
 
+    # ── Danger Zone ──
+    st.markdown("---")
+    st.markdown("#### Danger Zone")
+    if st.button("Reset All Data", type="secondary"):
+        if st.session_state.get("confirm_reset"):
+            import shutil
+            shutil.rmtree(DATA_DIR, ignore_errors=True)
+            st.success("All data cleared. Restart Permafrost.")
+            st.session_state.clear()
+            st.rerun()
+        else:
+            st.session_state.confirm_reset = True
+            st.warning("Click again to confirm — this will delete all data, memories, and settings.")
+            st.rerun()
+
 
 # ══════════════════════════════════════════
 # Chat
@@ -681,6 +696,22 @@ def render_status():
                     )
     except Exception:
         st.caption(t("token_usage_na", _lang))
+
+    # Memory Stats (L1-L6)
+    st.markdown(f"#### Memory Layers")
+    try:
+        from smart.memory import PFMemory
+        mem = PFMemory(str(DATA_DIR))
+        stats = mem.get_stats()
+        mc1, mc2, mc3, mc4, mc5, mc6 = st.columns(6)
+        mc1.metric("L1 Rules", stats.get("L1", 0))
+        mc2.metric("L2 Verified", stats.get("L2", 0))
+        mc3.metric("L3 Dynamic", stats.get("L3", 0))
+        mc4.metric("L4 Monthly", stats.get("L4", 0))
+        mc5.metric("L5 Quarterly", stats.get("L5", 0))
+        mc6.metric("L6 Annual", stats.get("L6", 0))
+    except Exception:
+        st.caption("Memory stats unavailable")
 
     # Recent activity
     st.markdown(f"#### {t('recent_messages', _lang)}")
