@@ -36,12 +36,15 @@ COST_PER_1M: dict[str, tuple[float, float]] = {
     "o3-mini":                     (1.1,   4.4),
     # Google
     "gemini-2.0-flash":            (0.075, 0.3),
+    "gemini-2.5-flash":            (0.15,  0.6),
     "gemini-2.5-pro":              (1.25,  10.0),
+    "gemini-2.5-flash-lite":       (0.075, 0.3),
     # OpenRouter — same models, different names
     "anthropic/claude-sonnet-4":   (3.0,   15.0),
     "anthropic/claude-opus-4":     (15.0,  75.0),
     "openai/gpt-4o":               (2.5,   10.0),
     "google/gemini-2.0-flash":     (0.075, 0.3),
+    "google/gemini-2.5-flash":     (0.15,  0.6),
 }
 
 

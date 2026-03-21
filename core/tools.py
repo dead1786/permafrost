@@ -110,13 +110,92 @@ def tool_list_files(path: str = ".", **kwargs) -> str:
 
 
 @register_tool(
-    "web_search",
-    "Search the web (placeholder — not yet implemented)",
+    "python_exec",
+    "Execute Python code",
+    {"code": {"type": "string", "description": "Python code to execute"}},
+)
+def tool_python_exec(code: str, **kwargs) -> str:
+    """Execute a Python code snippet in a subprocess."""
+    try:
+        result = subprocess.run(
+            ["python", "-c", code], capture_output=True, text=True,
+            timeout=30, encoding="utf-8", errors="replace",
+        )
+        output = result.stdout
+        if result.stderr:
+            output += f"\n[stderr] {result.stderr}"
+        return output[:4000]
+    except subprocess.TimeoutExpired:
+        return "[error] Timeout (30s)"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool(
+    "web_fetch",
+    "Fetch content from a URL",
+    {"url": {"type": "string", "description": "URL to fetch"}},
+)
+def tool_web_fetch(url: str, **kwargs) -> str:
+    """Fetch webpage content, stripping HTML tags for readability."""
+    import requests
+    try:
+        r = requests.get(url, timeout=15, headers={"User-Agent": "Permafrost/1.0"})
+        text = re.sub(r'<[^>]+>', '', r.text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text[:4000]
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool(
+    "search_web",
+    "Search the web using DuckDuckGo",
     {"query": {"type": "string", "description": "Search query"}},
 )
-def tool_web_search(query: str, **kwargs) -> str:
-    """Placeholder for web search integration."""
-    return f"[not implemented] web_search for: {query}"
+def tool_search_web(query: str, **kwargs) -> str:
+    """Search the web via DuckDuckGo Instant Answer API."""
+    import requests
+    try:
+        r = requests.get(
+            "https://api.duckduckgo.com/",
+            params={"q": query, "format": "json"},
+            timeout=10,
+        )
+        data = r.json()
+        results = []
+        if data.get("Abstract"):
+            results.append(f"Summary: {data['Abstract']}")
+        for topic in data.get("RelatedTopics", [])[:5]:
+            if isinstance(topic, dict) and topic.get("Text"):
+                results.append(f"- {topic['Text']}")
+        return "\n".join(results) if results else "No results found."
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool(
+    "edit_file",
+    "Find and replace text in a file",
+    {
+        "path": {"type": "string", "description": "File path"},
+        "old_text": {"type": "string", "description": "Text to find"},
+        "new_text": {"type": "string", "description": "Replacement text"},
+    },
+)
+def tool_edit_file(path: str, old_text: str, new_text: str, **kwargs) -> str:
+    """Find and replace first occurrence of old_text with new_text in a file."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        if old_text not in content:
+            return f"[error] old_text not found in {path}"
+        content = content.replace(old_text, new_text, 1)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return f"Replaced in {path}"
+    except Exception as e:
+        return f"[error] {e}"
 
 
 # ── Tool Executor ─────────────────────────────────────────────
@@ -178,25 +257,23 @@ def get_tool_prompt() -> str:
     Used for prompt-injection-based tool use (works with any LLM).
     """
     lines = [
-        "You have access to these tools:",
+        "You have access to these tools to interact with the computer:",
         "",
     ]
-    for name, info in TOOLS.items():
+    for idx, (name, info) in enumerate(TOOLS.items(), 1):
         param_parts = []
-        for pname, pinfo in info["parameters"].items():
-            desc = pinfo.get("description", pname)
-            param_parts.append(f"{pname}")
+        for pname in info["parameters"]:
+            param_parts.append(pname)
         params_str = ", ".join(param_parts)
-        lines.append(f"- {name}({params_str}): {info['description']}")
+        lines.append(f"{idx}. {name}({params_str}) — {info['description']}")
 
     lines.extend([
         "",
-        "To use a tool, include in your response:",
+        "To use a tool, write:",
         '[TOOL_CALL]{"name": "tool_name", "args": {"key": "value"}}[/TOOL_CALL]',
         "",
-        "You can call multiple tools — use one [TOOL_CALL]...[/TOOL_CALL] block per tool.",
-        "After each tool call, you will receive the result and can continue your response.",
-        "Only use tools when needed to answer the question.",
+        "You can use multiple tools in sequence. After each tool call, you'll receive the result and can continue.",
+        "Always use tools when asked to interact with files, run commands, or search for information.",
     ])
     return "\n".join(lines)
 

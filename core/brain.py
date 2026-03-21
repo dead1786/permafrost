@@ -28,6 +28,7 @@ from pathlib import Path
 from .hooks import HookManager
 from .providers import create_provider, BaseProvider
 from .tools import execute_tool, get_tool_prompt, parse_tool_calls, strip_tool_calls
+from smart.default_prompt import build_default_prompt
 
 log = logging.getLogger("permafrost.brain")
 
@@ -45,7 +46,7 @@ DEFAULT_CONFIG = {
     "max_context_pct": 70,          # trigger compaction at this %
     "data_dir": "",                 # base directory for all data files
     "system_prompt": "",            # optional system prompt for AI
-    "enable_tools": False,          # enable tool use (AI can call tools)
+    "enable_tools": True,           # enable tool use (AI can call tools)
     "max_tool_rounds": 5,           # max consecutive tool-use rounds per message
     "allowed_user_ids": "",         # comma-separated user IDs (empty = allow all)
 }
@@ -232,6 +233,8 @@ class PFBrain:
 
         # System prompt (with tool instructions appended if enabled)
         sys_prompt = self.config.get("system_prompt", "")
+        if not sys_prompt:
+            sys_prompt = build_default_prompt(self.config)
         if self.config.get("enable_tools"):
             tool_prompt = get_tool_prompt()
             if sys_prompt:

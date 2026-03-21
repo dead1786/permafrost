@@ -235,6 +235,10 @@ def render_setup():
                                             help=field.get("help", ""), key=field_key)
                     channel_configs[field_key] = val
 
+            # Show LINE webhook URL if available
+            if ch["name"] == "line" and config.get("line_webhook_url"):
+                st.info(f"**Webhook URL** (paste in LINE Developers Console):\n\n`{config['line_webhook_url']}`")
+
     # ── Step 3: AI Persona ──
     st.markdown(f"### {t('step3_persona', _lang)}")
     st.caption(t("step3_caption", _lang))
@@ -279,6 +283,9 @@ def render_setup():
     selected_sec = st.selectbox(t("security_level", _lang), sec_labels, index=sec_idx,
                                 help=t("security_help", _lang))
     security_level = security_options[selected_sec]
+
+    enable_tools = st.checkbox("Enable AI Tools (bash, file ops, web search)",
+                               value=config.get("enable_tools", True))
 
     # ── Step 5: Preferences ──
     st.markdown(f"### {t('step5_preferences', _lang)}")
@@ -329,6 +336,7 @@ def render_setup():
                 "ai_model": ai_model,
                 "system_prompt": final_prompt,
                 "security_level": security_level,
+                "enable_tools": enable_tools,
                 "language": selected_lang,
                 "night_start": night_start,
                 "night_end": night_end,
@@ -580,11 +588,6 @@ def render_status():
         else:
             channel_status.append(f"\u26aa {ch_info['label']}")
     st.write(" | ".join(channel_status))
-
-    # LINE webhook URL display
-    line_webhook = config.get("line_webhook_url", "")
-    if config.get("line_enabled") and line_webhook:
-        st.info(f"**LINE Webhook URL** (paste in LINE Developers Console):\n\n`{line_webhook}`")
 
     # Service controls
     st.markdown(f"#### {t('controls', _lang)}")
