@@ -497,21 +497,11 @@ class ClaudeCLIProvider(BaseProvider):
 
         try:
             result = subprocess.run(
-                ["claude", "-p", f"@{tmp_path}", "--output-format", "stream-json"],
+                ["claude", "-p", f"@{tmp_path}"],
                 capture_output=True, text=True, timeout=self.timeout,
                 encoding="utf-8", errors="replace",
             )
 
-            # Parse stream-json output
-            for line in result.stdout.strip().split("\n"):
-                try:
-                    evt = json.loads(line)
-                    if evt.get("type") == "result":
-                        return evt.get("result", "")
-                except json.JSONDecodeError:
-                    continue
-
-            # Fallback: try plain text output
             if result.stdout.strip():
                 return result.stdout.strip()
 
@@ -542,7 +532,7 @@ class ClaudeCLIProvider(BaseProvider):
                 )
             # Check if logged in by trying a simple prompt
             test = subprocess.run(
-                ["claude", "-p", "hi", "--output-format", "stream-json"],
+                ["claude", "-p", "hi"],
                 capture_output=True, text=True, timeout=15,
             )
             if test.returncode != 0 and "auth" in test.stderr.lower():
