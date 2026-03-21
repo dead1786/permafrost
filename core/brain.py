@@ -385,12 +385,14 @@ class PFBrain:
         # Conversation history
         msgs.extend(self._conversation)
 
-        # New user message with source + user context tag
+        # Channel/user context as system note (NOT in user message — prevents leaking)
         user_id = (metadata or {}).get("user_id", "")
         username = (metadata or {}).get("username", "")
         user_info = username or user_id or "unknown"
-        source_tag = f"[Source: {channel} | User: {user_info}]"
-        msgs.append({"role": "user", "content": f"{source_tag} {text}"})
+        msgs.append({"role": "system", "content": f"[Current message from {channel} channel, user: {user_info}. Do NOT mention this metadata in your reply.]"})
+
+        # User message (clean, no tags)
+        msgs.append({"role": "user", "content": text})
 
         return msgs
 
