@@ -72,14 +72,23 @@ header[data-testid="stHeader"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# Sticky header for top navigation tabs
+# Sticky tab bar + auto-scroll chat to bottom
 st.markdown("""<style>
-div[data-testid="stTabs"] > div:first-child {
-    position: sticky;
-    top: 0;
-    z-index: 999;
-    background: #0e1117;
-    padding-top: 0.5rem;
+/* Sticky tab navigation */
+div[data-baseweb="tab-list"] {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 9999 !important;
+    background: #0e1117 !important;
+    padding: 0.5rem 0 !important;
+    border-bottom: 1px solid #333 !important;
+}
+/* Ensure parent doesn't clip sticky */
+div[data-testid="stTabs"] {
+    overflow: visible !important;
+}
+.block-container {
+    overflow: visible !important;
 }
 </style>""", unsafe_allow_html=True)
 
@@ -349,6 +358,13 @@ def render_chat():
         avatar = str(LOGO_PATH) if msg["role"] == "assistant" else None
         with st.chat_message(msg["role"], avatar=avatar):
             st.write(msg["content"])
+
+    # Auto-scroll to bottom of chat
+    import streamlit.components.v1 as components
+    components.html(
+        "<script>window.parent.document.querySelector('section.main').scrollTo(0, 999999);</script>",
+        height=0,
+    )
 
     # Input
     if prompt := st.chat_input(t("type_message", _lang)):
