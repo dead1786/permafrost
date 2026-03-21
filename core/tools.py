@@ -616,6 +616,265 @@ def tool_screenshot(path: str = "screenshot.png", **kwargs) -> str:
         return f"[error] {e}"
 
 
+# ── Text & Data Tools ─────────────────────────────────────────
+
+@register_tool("encode_decode", "Encode/decode text (base64, URL, HTML entities)", {
+    "text": {"type": "string", "description": "Text to encode/decode"},
+    "method": {"type": "string", "description": "base64_encode, base64_decode, url_encode, url_decode, html_escape, html_unescape"},
+})
+def tool_encode_decode(text: str, method: str = "base64_encode", **kwargs) -> str:
+    import base64, urllib.parse, html
+    try:
+        if method == "base64_encode":
+            return base64.b64encode(text.encode()).decode()
+        elif method == "base64_decode":
+            return base64.b64decode(text).decode()
+        elif method == "url_encode":
+            return urllib.parse.quote(text, safe="")
+        elif method == "url_decode":
+            return urllib.parse.unquote(text)
+        elif method == "html_escape":
+            return html.escape(text)
+        elif method == "html_unescape":
+            return html.unescape(text)
+        return f"[error] Unknown method: {method}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("regex_extract", "Extract data from text using regex", {
+    "text": {"type": "string", "description": "Text to search"},
+    "pattern": {"type": "string", "description": "Regex pattern (use groups to capture)"},
+})
+def tool_regex_extract(text: str, pattern: str, **kwargs) -> str:
+    try:
+        matches = re.findall(pattern, text)
+        if not matches:
+            return "No matches."
+        return json.dumps(matches[:20], ensure_ascii=False)
+    except re.error as e:
+        return f"[error] Invalid regex: {e}"
+
+
+@register_tool("text_stats", "Count words, characters, lines in text or file", {
+    "text": {"type": "string", "description": "Text to analyze (or file path if starts with @)"},
+})
+def tool_text_stats(text: str, **kwargs) -> str:
+    try:
+        if text.startswith("@") and os.path.isfile(text[1:]):
+            with open(text[1:], "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        lines = text.count("\n") + 1
+        words = len(text.split())
+        chars = len(text)
+        return f"Lines: {lines}\nWords: {words}\nChars: {chars}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("generate_password", "Generate a secure random password", {
+    "length": {"type": "number", "description": "Password length (default: 16)"},
+    "no_symbols": {"type": "string", "description": "Set to 'true' for alphanumeric only"},
+})
+def tool_generate_password(length: int = 16, no_symbols: str = "false", **kwargs) -> str:
+    import secrets, string
+    chars = string.ascii_letters + string.digits
+    if no_symbols.lower() != "true":
+        chars += "!@#$%&*-_=+"
+    pwd = "".join(secrets.choice(chars) for _ in range(int(length)))
+    return pwd
+
+
+@register_tool("generate_uuid", "Generate a UUID", {})
+def tool_generate_uuid(**kwargs) -> str:
+    import uuid
+    return str(uuid.uuid4())
+
+
+# ── Network Tools ────────────────────────────────────────────
+
+@register_tool("ping", "Check if a host is reachable", {
+    "host": {"type": "string", "description": "Hostname or IP address"},
+})
+def tool_ping(host: str, **kwargs) -> str:
+    try:
+        flag = "-n" if os.name == "nt" else "-c"
+        result = subprocess.run(
+            ["ping", flag, "3", host],
+            capture_output=True, text=True, timeout=15,
+        )
+        return result.stdout[:2000] if result.returncode == 0 else f"Host unreachable:\n{result.stdout[:500]}"
+    except subprocess.TimeoutExpired:
+        return f"[timeout] {host} did not respond in 15s"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("port_check", "Check if a TCP port is open", {
+    "host": {"type": "string", "description": "Hostname or IP"},
+    "port": {"type": "number", "description": "Port number"},
+})
+def tool_port_check(host: str, port: int, **kwargs) -> str:
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5)
+        result = s.connect_ex((host, int(port)))
+        s.close()
+        return f"{host}:{int(port)} — {'OPEN' if result == 0 else 'CLOSED'}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("dns_lookup", "DNS lookup for a domain", {
+    "domain": {"type": "string", "description": "Domain to lookup"},
+})
+def tool_dns_lookup(domain: str, **kwargs) -> str:
+    import socket
+    try:
+        results = socket.getaddrinfo(domain, None)
+        ips = list(set(r[4][0] for r in results))
+        return f"{domain}:\n" + "\n".join(f"  {ip}" for ip in ips[:10])
+    except socket.gaierror as e:
+        return f"[error] DNS lookup failed: {e}"
+
+
+# ── Git Tools ─────────────────────────────────────────────────
+
+@register_tool("git_status", "Show git repository status", {
+    "path": {"type": "string", "description": "Repository path (default: current dir)"},
+})
+def tool_git_status(path: str = ".", **kwargs) -> str:
+    try:
+        r = subprocess.run(["git", "status", "--short"], capture_output=True,
+                          text=True, cwd=path, timeout=10)
+        branch = subprocess.run(["git", "branch", "--show-current"], capture_output=True,
+                               text=True, cwd=path, timeout=5)
+        return f"Branch: {branch.stdout.strip()}\n{r.stdout[:2000] or 'Clean'}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("git_log", "Show recent git commits", {
+    "path": {"type": "string", "description": "Repository path (default: current dir)"},
+    "count": {"type": "number", "description": "Number of commits (default: 10)"},
+})
+def tool_git_log(path: str = ".", count: int = 10, **kwargs) -> str:
+    try:
+        r = subprocess.run(
+            ["git", "log", f"--oneline", f"-{int(count)}"],
+            capture_output=True, text=True, cwd=path, timeout=10,
+        )
+        return r.stdout[:3000] or "No commits."
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("git_diff", "Show git changes (staged or unstaged)", {
+    "path": {"type": "string", "description": "Repository path (default: current dir)"},
+    "staged": {"type": "string", "description": "Set to 'true' for staged changes only"},
+})
+def tool_git_diff(path: str = ".", staged: str = "false", **kwargs) -> str:
+    try:
+        cmd = ["git", "diff"]
+        if staged.lower() == "true":
+            cmd.append("--staged")
+        r = subprocess.run(cmd, capture_output=True, text=True, cwd=path, timeout=10)
+        return r.stdout[:4000] or "No changes."
+    except Exception as e:
+        return f"[error] {e}"
+
+
+# ── QR Code ──────────────────────────────────────────────────
+
+@register_tool("qrcode_create", "Generate a QR code image", {
+    "data": {"type": "string", "description": "Data to encode (URL, text, etc.)"},
+    "path": {"type": "string", "description": "Output image path (default: qrcode.png)"},
+})
+def tool_qrcode_create(data: str, path: str = "qrcode.png", **kwargs) -> str:
+    try:
+        import qrcode
+        img = qrcode.make(data)
+        img.save(path)
+        return f"QR code saved: {path}"
+    except ImportError:
+        return "[error] Install qrcode: pip install qrcode[pil]"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+# ── PF Schedule Management ───────────────────────────────────
+
+@register_tool("schedule_add", "Add a new scheduled task to PF scheduler", {
+    "task_id": {"type": "string", "description": "Unique task ID (snake_case)"},
+    "description": {"type": "string", "description": "What the task does"},
+    "schedule_type": {"type": "string", "description": "cron, daily, interval, or once"},
+    "schedule_value": {"type": "string", "description": "Cron expr, HH:MM, minutes, or ISO datetime"},
+    "command": {"type": "string", "description": "Command/instruction for the brain to execute"},
+})
+def tool_schedule_add(task_id: str, description: str, schedule_type: str,
+                      schedule_value: str, command: str, **kwargs) -> str:
+    from pathlib import Path
+    data_dir = Path(os.path.expanduser("~/.permafrost"))
+    schedule_file = data_dir / "schedule.json"
+    try:
+        schedule = {"tasks": []}
+        if schedule_file.exists():
+            raw = json.loads(schedule_file.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                schedule = raw
+            elif isinstance(raw, list):
+                schedule = {"tasks": raw}
+
+        # Check for duplicate
+        for t in schedule["tasks"]:
+            if t.get("id") == task_id:
+                return f"[error] Task '{task_id}' already exists"
+
+        task = {
+            "id": task_id,
+            "enabled": True,
+            "description": description,
+            "command": command,
+            "schedule": {},
+        }
+        if schedule_type == "cron":
+            task["schedule"] = {"type": "cron", "cron": schedule_value}
+        elif schedule_type == "daily":
+            task["schedule"] = {"type": "daily", "time": schedule_value}
+        elif schedule_type == "interval":
+            task["schedule"] = {"type": "interval", "minutes": int(schedule_value)}
+        elif schedule_type == "once":
+            task["schedule"] = {"type": "once", "datetime": schedule_value}
+
+        schedule["tasks"].append(task)
+        schedule_file.write_text(json.dumps(schedule, indent=2, ensure_ascii=False), encoding="utf-8")
+        return f"Task '{task_id}' added ({schedule_type}: {schedule_value})"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("schedule_list", "List all PF scheduled tasks", {})
+def tool_schedule_list(**kwargs) -> str:
+    from pathlib import Path
+    schedule_file = Path(os.path.expanduser("~/.permafrost")) / "schedule.json"
+    if not schedule_file.exists():
+        return "No schedule configured."
+    try:
+        raw = json.loads(schedule_file.read_text(encoding="utf-8"))
+        tasks = raw.get("tasks", raw) if isinstance(raw, dict) else raw
+        lines = []
+        for t in tasks:
+            status = "ON" if t.get("enabled", True) else "OFF"
+            sched = t.get("schedule", {})
+            stype = sched.get("type", "?")
+            sval = sched.get("cron", sched.get("time", sched.get("minutes", sched.get("datetime", "?"))))
+            lines.append(f"  [{status}] {t.get('id','?')} ({stype}: {sval}) — {t.get('description','')[:60]}")
+        return f"Scheduled tasks ({len(tasks)}):\n" + "\n".join(lines)
+    except Exception as e:
+        return f"[error] {e}"
+
+
 # ── Document & Media Tools ────────────────────────────────────
 
 @register_tool("create_pdf", "Create a PDF document from text or HTML content", {

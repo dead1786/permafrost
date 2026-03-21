@@ -52,6 +52,11 @@ DEFAULT_TOOL_WHITELIST = {
         "download_file", "system_info", "process_list", "kill_process",
         "compress", "extract", "diff_files", "file_hash",
         "clipboard", "screenshot",
+        "encode_decode", "regex_extract", "text_stats",
+        "generate_password", "generate_uuid",
+        "ping", "port_check", "dns_lookup",
+        "git_status", "git_log", "git_diff",
+        "qrcode_create", "schedule_add", "schedule_list",
     ],
     "standard": [
         "read_file", "write_file", "edit_file", "search", "list_files",
