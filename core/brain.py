@@ -361,7 +361,13 @@ class PFBrain:
         if l1_rules:
             sys_prompt = (sys_prompt or "") + f"\n\n## Core Rules (L1)\n{l1_rules}"
 
-        if self.config.get("enable_tools"):
+        # Tool instructions: only inject text-based tool prompt for non-native providers
+        # Native providers (Claude/GPT/Gemini) get tool schemas via API, no text needed
+        use_native = (self.config.get("enable_tools") and
+                     hasattr(self.provider, 'SUPPORTS_TOOLS') and
+                     self.provider.SUPPORTS_TOOLS)
+        if self.config.get("enable_tools") and not use_native:
+            # Fallback mode: inject text-based tool instructions
             tool_prompt = get_tool_prompt()
             if sys_prompt:
                 sys_prompt = f"{sys_prompt}\n\n{tool_prompt}"
