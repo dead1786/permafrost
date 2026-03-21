@@ -188,7 +188,28 @@ def render_setup():
     st.markdown(f"### {t('step1_model', _lang)}")
 
     providers = list_providers()
-    provider_labels = [p["label"] for p in providers]
+
+    # Add user-friendly tags to provider labels
+    _provider_tags = {
+        "qwen": "FREE",
+        "chutes": "FREE",
+        "minimax": "FREE",
+        "echo": "FREE TEST",
+        "ollama": "FREE LOCAL",
+        "openai-codex": "SUBSCRIPTION",
+        "copilot": "SUBSCRIPTION",
+        "claude-cli": "SUBSCRIPTION",
+        "custom": "ADVANCED",
+        "claude": "API KEY",
+        "openai": "API KEY",
+        "gemini": "API KEY (free tier)",
+        "openrouter": "API KEY",
+    }
+    provider_labels = []
+    for p in providers:
+        tag = _provider_tags.get(p["name"], "")
+        label = f"{p['label']}  [{tag}]" if tag else p["label"]
+        provider_labels.append(label)
     provider_names = [p["name"] for p in providers]
 
     current = config.get("ai_provider", "claude")
@@ -198,6 +219,23 @@ def render_setup():
     selected_idx = provider_labels.index(selected_label)
     provider_info = providers[selected_idx]
     provider = provider_info["name"]
+
+    # Show provider help text
+    _provider_help = {
+        "qwen": "Free! Browser login, 2000 calls/day. Best free option.",
+        "chutes": "Free! Browser login, open-source models (DeepSeek, Llama).",
+        "minimax": "Free! Chinese AI models.",
+        "ollama": "Free! Run AI locally. Install ollama.com first.",
+        "echo": "Free test mode. No real AI — demonstrates tools and features.",
+        "openai-codex": "Use your ChatGPT Plus/Pro subscription. Browser login.",
+        "copilot": "Use your GitHub Copilot subscription. Browser auth.",
+        "claude-cli": "Use your Claude subscription. Requires 'claude' CLI installed.",
+        "custom": "Connect to any OpenAI-compatible local proxy (LiteLLM, etc).",
+        "gemini": "Google AI. Free tier: 1500 calls/day with API key from aistudio.google.com",
+    }
+    help_text = _provider_help.get(provider, "")
+    if help_text:
+        st.caption(help_text)
 
     if provider_info["needs_api_key"]:
         if provider == "ollama":
