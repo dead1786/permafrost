@@ -1,0 +1,35 @@
+# Permafrost — Docker Compose
+#
+# Usage:
+#   docker compose up -d          # Start all services
+#   docker compose up -d brain    # Brain only (headless)
+#   docker compose logs -f        # Watch logs
+#   docker compose down           # Stop all
+
+services:
+  brain:
+    build: .
+    container_name: permafrost-brain
+    restart: unless-stopped
+    volumes:
+      - pf-data:/data
+    environment:
+      - PF_DATA_DIR=/data
+    secrets:
+      - api_key
+    ports:
+      - "8503:8503"  # Streamlit console
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,sys; h=json.load(open('/data/brain-heartbeat.json')); sys.exit(0)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  pf-data:
+    driver: local
+
+secrets:
+  api_key:
+    file: ./secrets/api_key.txt

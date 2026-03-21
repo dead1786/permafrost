@@ -1,0 +1,13 @@
+# Permafrost — Dependencies
+# Core
+requests>=2.31.0
+pillow>=10.0.0
+
+# Console (Web UI)
+streamlit>=1.30.0
+
+# AI Providers (install what you need)
+# anthropic>=0.40.0      # Claude
+# openai>=1.50.0         # GPT
+# google-generativeai    # Gemini
+# (Ollama and OpenRouter use requests, no extra deps)

@@ -1,0 +1,19 @@
+{
+  "ai_provider": "claude",
+  "ai_model": "claude-sonnet-4-20250514",
+  "api_key": "sk-ant-xxx",
+  "ai_timeout": 120,
+  "ai_max_retries": 2,
+  "system_prompt": "",
+  "night_start": "00:00",
+  "night_end": "08:00",
+  "web_enabled": true,
+  "telegram_enabled": false,
+  "telegram_token": "",
+  "telegram_chat_id": "",
+  "discord_enabled": false,
+  "discord_token": "",
+  "discord_channel_id": "",
+  "discord_allowed_users": "",
+  "security_level": "standard"
+}
