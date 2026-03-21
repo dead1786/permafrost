@@ -10,11 +10,15 @@ from pathlib import Path
 
 import streamlit as st
 
+LOGO_PATH = Path(__file__).parent.parent / "docs" / "logo.png"
+
 # Import registries for dynamic config generation
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.providers import list_providers, _PROVIDERS  # noqa: E402
+from core.token_tracker import get_usage_summary, get_today_usage  # noqa: E402
 from channels.base import list_channels, _CHANNELS  # noqa: E402
+from console.i18n import t, SUPPORTED_LANGUAGES  # noqa: E402
 # Trigger registration by importing channel modules
 import channels.telegram  # noqa: F401, E402
 import channels.discord  # noqa: F401, E402
@@ -68,6 +72,17 @@ header[data-testid="stHeader"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
+# Sticky header for top navigation tabs
+st.markdown("""<style>
+div[data-testid="stTabs"] > div:first-child {
+    position: sticky;
+    top: 0;
+    z-index: 999;
+    background: #0e1117;
+    padding-top: 0.5rem;
+}
+</style>""", unsafe_allow_html=True)
+
 
 def load_config():
     if CONFIG_FILE.exists():
@@ -80,6 +95,11 @@ def save_config(config):
     CONFIG_FILE.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def get_lang() -> str:
+    """Get current UI language from config."""
+    return load_config().get("language", "en")
+
+
 def is_configured():
     config = load_config()
     return bool(config.get("ai_provider") and config.get("api_key"))
@@ -90,17 +110,18 @@ if "page" not in st.session_state:
     st.session_state.page = "chat" if is_configured() else "setup"
 
 if is_configured():
+    _lang = get_lang()
     c1, c2, c3, c4 = st.columns(4)
-    if c1.button("\U0001f4ac Chat", use_container_width=True):
+    if c1.button(f"\U0001f4ac {t('chat', _lang)}", use_container_width=True):
         st.session_state.page = "chat"
         st.rerun()
-    if c2.button("\U0001f4c5 Schedule", use_container_width=True):
+    if c2.button(f"\U0001f4c5 {t('schedule', _lang)}", use_container_width=True):
         st.session_state.page = "schedule"
         st.rerun()
-    if c3.button("\U0001f4ca Status", use_container_width=True):
+    if c3.button(f"\U0001f4ca {t('status', _lang)}", use_container_width=True):
         st.session_state.page = "status"
         st.rerun()
-    if c4.button("\u2699\ufe0f Settings", use_container_width=True):
+    if c4.button(f"\u2699\ufe0f {t('settings', _lang)}", use_container_width=True):
         st.session_state.page = "setup"
         st.rerun()
 
@@ -233,6 +254,15 @@ if page == "setup":
     # ── Step 5: Preferences ──
     st.markdown("### Step 5: Preferences")
 
+    # Language selector
+    lang_labels = list(SUPPORTED_LANGUAGES.values())
+    lang_codes = list(SUPPORTED_LANGUAGES.keys())
+    current_lang = config.get("language", "en")
+    lang_idx = lang_codes.index(current_lang) if current_lang in lang_codes else 0
+    selected_lang_label = st.selectbox("Language", lang_labels, index=lang_idx,
+                                        help="UI display language")
+    selected_lang = lang_codes[lang_labels.index(selected_lang_label)]
+
     night_start = st.text_input("Night silence start", value=config.get("night_start", "00:00"))
     night_end = st.text_input("Night silence end", value=config.get("night_end", "08:00"))
 
@@ -268,6 +298,7 @@ if page == "setup":
                 "ai_model": ai_model,
                 "system_prompt": final_prompt,
                 "security_level": security_level,
+                "language": selected_lang,
                 "night_start": night_start,
                 "night_end": night_end,
                 "configured_at": datetime.now().isoformat(),
@@ -311,7 +342,8 @@ elif page == "chat":
 
     # Display messages
     for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
+        avatar = str(LOGO_PATH) if msg["role"] == "assistant" else None
+        with st.chat_message(msg["role"], avatar=avatar):
             st.write(msg["content"])
 
     # Input
@@ -354,7 +386,7 @@ elif page == "chat":
         # Poll for response from web-outbox.json
         outbox_file = DATA_DIR / "web-outbox.json"
         sent_at = datetime.now().isoformat()
-        with st.chat_message("assistant"):
+        with st.chat_message("assistant", avatar=str(LOGO_PATH)):
             placeholder = st.empty()
             placeholder.write("\u23f3 Thinking...")
             response = None
@@ -426,6 +458,14 @@ elif page == "schedule":
 # Status
 # ══════════════════════════════════════════
 elif page == "status":
+    # Auto-refresh every 10 seconds
+    import time as _time
+    if "last_status_refresh" not in st.session_state:
+        st.session_state.last_status_refresh = _time.time()
+    if _time.time() - st.session_state.last_status_refresh > 10:
+        st.session_state.last_status_refresh = _time.time()
+        st.rerun()
+
     st.markdown("### \U0001f4ca System Status")
 
     col1, col2, col3 = st.columns(3)
@@ -478,6 +518,10 @@ elif page == "status":
     ctrl1, ctrl2 = st.columns(2)
     launcher_path = Path(__file__).resolve().parent.parent / "launcher.py"
     if ctrl1.button("\U0001f680 Start Brain", use_container_width=True):
+        # Remove stop trigger so brain can start cleanly
+        stop_trigger = DATA_DIR / "brain-stop.trigger"
+        stop_trigger.unlink(missing_ok=True)
+
         import subprocess
         try:
             if sys.platform == "win32":
@@ -495,6 +539,15 @@ elif page == "status":
             st.error(f"Launch failed: {e}")
 
     if ctrl2.button("\U0001f6d1 Stop Brain", use_container_width=True):
+        # Write stop trigger for graceful shutdown (brain main loop checks this)
+        stop_trigger = DATA_DIR / "brain-stop.trigger"
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            stop_trigger.write_text(datetime.now().isoformat())
+        except OSError:
+            pass
+
+        # Also try PID-based kill as fallback
         pid_file = DATA_DIR / "brain.pid"
         if pid_file.exists():
             try:
@@ -505,14 +558,57 @@ elif page == "status":
                     import signal
                     os.kill(pid, signal.SIGTERM)
                 pid_file.unlink(missing_ok=True)
-                st.success(f"Stopped PID {pid}")
+                st.success(f"Stopped brain (PID {pid})")
             except Exception as e:
                 st.error(f"Stop failed: {e}")
         else:
-            st.info("No brain PID file found")
+            st.success("Stop signal sent (trigger file written)")
+
+    # Token Usage
+    _lang = get_lang()
+    st.markdown(f"#### {t('token_usage', _lang)}")
+    try:
+        usage = get_usage_summary()
+        today = get_today_usage()
+
+        tu1, tu2, tu3 = st.columns(3)
+        tu1.metric(t("today_calls", _lang), today.get("calls", 0))
+        tu2.metric(
+            t("today_tokens", _lang),
+            f"{today.get('prompt', 0) + today.get('completion', 0):,}",
+            f"{today.get('prompt', 0):,} {t('prompt', _lang)} / {today.get('completion', 0):,} {t('completion', _lang)}",
+        )
+        tu3.metric(t("today_cost", _lang), f"${today.get('cost_usd', 0):.4f}")
+
+        tu4, tu5 = st.columns(2)
+        total_tok = usage.get("total_prompt_tokens", 0) + usage.get("total_completion_tokens", 0)
+        tu4.metric(
+            t("total_tokens", _lang),
+            f"{total_tok:,}",
+            f"{usage.get('total_prompt_tokens', 0):,} {t('prompt', _lang)} / {usage.get('total_completion_tokens', 0):,} {t('completion', _lang)}",
+        )
+        tu5.metric(t("total_cost", _lang), f"${usage.get('total_cost_usd', 0):.4f}")
+
+        # Daily breakdown (last 7 days)
+        daily = usage.get("daily", {})
+        if daily:
+            with st.expander(t("daily_breakdown", _lang)):
+                sorted_days = sorted(daily.keys(), reverse=True)[:7]
+                header = f"| {t('date', _lang)} | {t('calls', _lang)} | {t('tokens_p_c', _lang)} | {t('cost', _lang)} |"
+                st.markdown(header)
+                st.markdown("|---|---|---|---|")
+                for day in sorted_days:
+                    d = daily[day]
+                    st.markdown(
+                        f"| {day} | {d.get('calls', 0)} | "
+                        f"{d.get('prompt', 0):,} / {d.get('completion', 0):,} | "
+                        f"${d.get('cost_usd', 0):.4f} |"
+                    )
+    except Exception:
+        st.caption("Token usage data not available.")
 
     # Recent activity
-    st.markdown("#### Recent Messages")
+    st.markdown(f"#### {t('recent_messages', _lang)}")
     msg_log = DATA_DIR / "message-log.json"
     if msg_log.exists():
         try:

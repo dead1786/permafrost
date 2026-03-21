@@ -63,6 +63,14 @@ class BaseProvider(ABC):
         self.max_retries = max_retries
         self.extra = kwargs
 
+    def _track_usage(self, prompt_tokens: int, completion_tokens: int):
+        """Record token usage after an API call."""
+        try:
+            from core.token_tracker import track_usage
+            track_usage(prompt_tokens, completion_tokens, model=self.model)
+        except Exception as e:
+            log.debug(f"Token tracking skipped: {e}")
+
     @abstractmethod
     def chat(self, messages: list[dict], **kwargs) -> str:
         """Send messages and get a response.
@@ -149,6 +157,11 @@ class ClaudeProvider(BaseProvider):
             params["system"] = system
 
         response = client.messages.create(**params)
+        # Track token usage (Anthropic format)
+        try:
+            self._track_usage(response.usage.input_tokens, response.usage.output_tokens)
+        except (AttributeError, TypeError):
+            pass
         return response.content[0].text
 
     def _chat_via_cli(self, messages: list[dict]) -> str:
@@ -189,6 +202,13 @@ class OpenAIProvider(BaseProvider):
             messages=messages,
             timeout=self.timeout,
         )
+        # Track token usage (OpenAI format)
+        try:
+            usage = response.usage
+            if usage:
+                self._track_usage(usage.prompt_tokens, usage.completion_tokens)
+        except (AttributeError, TypeError):
+            pass
         return response.choices[0].message.content
 
 
@@ -224,6 +244,16 @@ class GeminiProvider(BaseProvider):
 
         model = genai.GenerativeModel(self.model, **model_kwargs)
         response = model.generate_content(contents)
+        # Track token usage (Gemini format)
+        try:
+            meta = response.usage_metadata
+            if meta:
+                self._track_usage(
+                    meta.prompt_token_count or 0,
+                    meta.candidates_token_count or 0,
+                )
+        except (AttributeError, TypeError):
+            pass
         return response.text
 
 
@@ -251,7 +281,16 @@ class OllamaProvider(BaseProvider):
             timeout=self.timeout,
         )
         r.raise_for_status()
-        return r.json().get("message", {}).get("content", "[no response]")
+        data = r.json()
+        # Ollama may include token counts in some versions; track if available
+        try:
+            prompt_t = data.get("prompt_eval_count", 0)
+            completion_t = data.get("eval_count", 0)
+            if prompt_t or completion_t:
+                self._track_usage(prompt_t, completion_t)
+        except (AttributeError, TypeError):
+            pass
+        return data.get("message", {}).get("content", "[no response]")
 
     def validate(self) -> tuple[bool, str]:
         if not self.model:
@@ -283,4 +322,15 @@ class OpenRouterProvider(BaseProvider):
             timeout=self.timeout,
         )
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"]
+        data = r.json()
+        # Track token usage (OpenAI-compatible format)
+        try:
+            usage = data.get("usage", {})
+            if usage:
+                self._track_usage(
+                    usage.get("prompt_tokens", 0),
+                    usage.get("completion_tokens", 0),
+                )
+        except (AttributeError, TypeError):
+            pass
+        return data["choices"][0]["message"]["content"]
