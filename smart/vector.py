@@ -200,10 +200,42 @@ class VectorStore:
 # ── BM25 Keyword Scoring ─────────────────────────────────────────
 
 
+# Stopwords for query expansion (multi-language)
+_STOPWORDS = {
+    # English
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "need", "must", "to", "of",
+    "in", "for", "on", "with", "at", "by", "from", "as", "into", "about",
+    "that", "this", "these", "those", "it", "its", "my", "your", "his",
+    "her", "our", "their", "not", "no", "and", "or", "but", "if", "then",
+    "so", "what", "which", "who", "whom", "how", "when", "where", "why",
+    "all", "each", "every", "both", "few", "more", "most", "some", "any",
+    "just", "very", "also", "only", "even", "still", "already", "again",
+    # Chinese common particles
+    "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一",
+    "個", "上", "也", "很", "到", "說", "要", "去", "你", "會", "著", "沒有",
+    "看", "好", "自己", "這", "他", "她", "它", "嗎", "吧", "呢", "啊",
+    # Japanese
+    "の", "に", "は", "を", "た", "が", "で", "て", "と", "し", "れ", "さ",
+    "ある", "いる", "する", "から", "まで", "より", "など",
+}
+
+
 def _tokenize(text: str) -> list[str]:
     """Simple tokenizer: lowercase, split on non-alphanum, filter short tokens."""
     tokens = re.findall(r'[\w\u4e00-\u9fff\u3400-\u4dbf]+', text.lower())
     return [t for t in tokens if len(t) > 1]
+
+
+def expand_query(query: str) -> list[str]:
+    """Query expansion: extract meaningful keywords, remove stopwords.
+
+    Improves BM25 recall by focusing on content words.
+    """
+    tokens = _tokenize(query)
+    expanded = [t for t in tokens if t not in _STOPWORDS]
+    return expanded if expanded else tokens  # fallback to all tokens
 
 
 def bm25_score(query_tokens: list[str], doc_tokens: list[str],
@@ -320,6 +352,10 @@ class PFVectorSearch:
         self.temporal_weight = config.get("temporal_weight", 0.1)
         self.decay_half_life = config.get("decay_half_life_days", 30.0)
 
+        # Search quality
+        self.min_score = config.get("min_score", 0.35)
+        self.candidate_multiplier = config.get("candidate_multiplier", 4)
+
         # MMR
         self.mmr_lambda = config.get("mmr_lambda", 0.7)
 
@@ -380,8 +416,8 @@ class PFVectorSearch:
             # Fallback to BM25-only
             return self._bm25_only_search(query, entries, top_k)
 
-        # Tokenize for BM25
-        query_tokens = _tokenize(query)
+        # Tokenize for BM25 (with query expansion — remove stopwords)
+        query_tokens = expand_query(query)
         all_doc_tokens = [_tokenize(e["text"]) for e in entries]
         avg_dl = sum(len(dt) for dt in all_doc_tokens) / max(len(all_doc_tokens), 1)
 
@@ -417,8 +453,15 @@ class PFVectorSearch:
                 "temporal_score": temp_score,
             })
 
+        # Filter by minimum score threshold
+        scored = [s for s in scored if s["score"] >= self.min_score]
+
         # Sort by combined score
         scored.sort(key=lambda x: x["score"], reverse=True)
+
+        # Candidate multiplier: search more candidates for better MMR diversity
+        candidate_count = top_k * self.candidate_multiplier
+        scored = scored[:candidate_count]
 
         # MMR reranking for diversity
         if use_mmr and len(scored) > top_k:
