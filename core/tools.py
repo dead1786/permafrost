@@ -408,29 +408,83 @@ def get_tool_prompt() -> str:
 
     lines.extend([
         "",
-        "IMPORTANT: To use a tool, you MUST use EXACTLY this format (no variations):",
+        "IMPORTANT: To use a tool, you MUST use EXACTLY this format:",
         '[TOOL_CALL]{"name": "tool_name", "args": {"key": "value"}}[/TOOL_CALL]',
         "",
+        "Example — user asks to remember something:",
+        'Sure, I\'ll save that.',
+        '[TOOL_CALL]{"name": "memory_note", "args": {"key": "preference", "value": "likes coffee", "type": "preference"}}[/TOOL_CALL]',
+        "",
+        "Example — user asks to search memory:",
+        '[TOOL_CALL]{"name": "memory_search", "args": {"query": "coffee"}}[/TOOL_CALL]',
+        "",
         "Rules:",
-        "- The tag MUST be [TOOL_CALL] and [/TOOL_CALL], not [TOOL_CODE] or any other variant.",
-        "- The JSON must be valid with double quotes.",
-        "- You can use multiple tools in sequence. After each tool call, you'll receive the result.",
-        "- Always use tools when asked to interact with files, run commands, or search for information.",
+        "- Tag MUST be [TOOL_CALL] and [/TOOL_CALL]. No other tag names.",
+        "- JSON must use double quotes.",
+        "- After each tool call, you receive the result and can respond naturally.",
+        "- Use tools for files, commands, memory, and information retrieval.",
     ])
     return "\n".join(lines)
 
 
-# ── Tool Call Parser ──────────────────────────────────────────
+# ── Tool Call Normalizer + Parser ─────────────────────────────
 
 _TOOL_CALL_PATTERN = re.compile(
     r"\[TOOL_CALL\]\s*(\{.*?\})\s*\[/TOOL_CALL\]",
     re.DOTALL,
 )
-# Also match common AI variants: [TOOL_CODE], [tool_call], etc.
-_TOOL_CALL_VARIANTS = re.compile(
-    r"\[(?:TOOL_CALL|TOOL_CODE|tool_call|tool_code)\]\s*(\{.*?\})\s*\[/(?:TOOL_CALL|TOOL_CODE|tool_call|tool_code)\]",
+
+# Catch-all: any variant AI models might invent
+_TOOL_CALL_ANY = re.compile(
+    r"\[(?:TOOL_CALL|TOOL_CODE|tool_call|tool_code|Tool_Call|ToolCall|toolcall)\]"
+    r"\s*(\{.*?\})\s*"
+    r"\[/(?:TOOL_CALL|TOOL_CODE|tool_call|tool_code|Tool_Call|ToolCall|toolcall)\]",
     re.DOTALL,
 )
+
+# Even more aggressive: ```tool_call blocks (GPT-style)
+_TOOL_CALL_BACKTICK = re.compile(
+    r"```(?:tool_call|json)?\s*(\{[^`]*?\"name\"\s*:[^`]*?\})\s*```",
+    re.DOTALL,
+)
+
+
+def normalize_tool_calls(text: str) -> str:
+    """Normalize ANY tool call format into standard [TOOL_CALL]...[/TOOL_CALL].
+
+    Handles:
+      - [TOOL_CODE]...[/TOOL_CODE] (Gemini)
+      - [tool_call]...[/tool_call] (lowercase variants)
+      - ```json {...} ``` (GPT-style code blocks with tool JSON)
+      - Any other bracket variant
+
+    This is the key to model-agnostic tool use: don't trust the model
+    to use the right format, just fix whatever it outputs.
+    """
+    # Already standard? Return as-is
+    if _TOOL_CALL_PATTERN.search(text):
+        return text
+
+    # Try bracket variants
+    normalized = _TOOL_CALL_ANY.sub(
+        lambda m: f"[TOOL_CALL]{m.group(1)}[/TOOL_CALL]", text
+    )
+    if _TOOL_CALL_PATTERN.search(normalized):
+        return normalized
+
+    # Try backtick code blocks containing tool JSON
+    for match in _TOOL_CALL_BACKTICK.finditer(text):
+        raw = match.group(1).strip()
+        try:
+            data = json.loads(raw)
+            if "name" in data:
+                replacement = f'[TOOL_CALL]{raw}[/TOOL_CALL]'
+                normalized = text.replace(match.group(0), replacement)
+                return normalized
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return text
 
 
 def parse_tool_calls(text: str) -> list[dict]:

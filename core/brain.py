@@ -27,7 +27,7 @@ from pathlib import Path
 
 from .hooks import HookManager
 from .providers import create_provider, BaseProvider
-from .tools import execute_tool, get_tool_prompt, parse_tool_calls, strip_tool_calls, has_tool_calls
+from .tools import execute_tool, get_tool_prompt, parse_tool_calls, strip_tool_calls, has_tool_calls, normalize_tool_calls
 from .compactor import PFCompactor
 from .agents import PFAgentManager, agent_memory_maintenance, agent_context_extractor, agent_health_check
 from .plugins import PFPluginManager
@@ -444,6 +444,10 @@ class PFBrain:
             self.hooks.emit("on_error", {"error": str(e), "channel": channel})
             response = f"[error] AI provider failed: {e}"
 
+        # Normalize tool call format (fixes Gemini TOOL_CODE, GPT backtick, etc.)
+        if tools_enabled:
+            response = normalize_tool_calls(response)
+
         # ── Tool use loop ──────────────────────────────────────────
         if tools_enabled and has_tool_calls(response):
             round_count = 0
@@ -483,6 +487,7 @@ class PFBrain:
                 # Call AI again with tool results
                 try:
                     response = self.provider.chat(msgs)
+                    response = normalize_tool_calls(response)
                 except Exception as e:
                     log.error(f"AI provider error (tool round {round_count}): {e}")
                     response = f"[error] AI provider failed during tool use: {e}"
