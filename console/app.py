@@ -273,12 +273,27 @@ elif page == "chat":
     if "messages" not in st.session_state:
         if chat_file.exists():
             try:
-                st.session_state.messages = json.loads(
-                    chat_file.read_text(encoding="utf-8"))[-50:]
+                loaded = json.loads(chat_file.read_text(encoding="utf-8"))[-50:]
+                # Filter out error messages from history
+                st.session_state.messages = [
+                    m for m in loaded
+                    if not (m.get("role") == "assistant" and m.get("content", "").startswith("[error]"))
+                ]
             except (json.JSONDecodeError, OSError):
                 st.session_state.messages = []
         else:
             st.session_state.messages = []
+
+    # Clear chat button
+    col1, col2 = st.columns([8, 1])
+    with col2:
+        if st.button("Clear", key="clear_chat"):
+            st.session_state.messages = []
+            try:
+                chat_file.write_text("[]", encoding="utf-8")
+            except OSError:
+                pass
+            st.rerun()
 
     # Display messages
     for msg in st.session_state.messages:
@@ -348,8 +363,11 @@ elif page == "chat":
                 time.sleep(1)
 
             if response:
-                placeholder.write(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
+                if response.startswith("[error]"):
+                    placeholder.write(f"\u26a0\ufe0f {response}")
+                else:
+                    placeholder.write(response)
+                    st.session_state.messages.append({"role": "assistant", "content": response})
                 # Update chat history
                 try:
                     history = st.session_state.messages[-200:]
