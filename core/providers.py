@@ -450,6 +450,88 @@ class OpenRouterProvider(BaseProvider):
         return data["choices"][0]["message"]["content"]
 
 
+# ── Claude CLI (use your Claude subscription, no API key) ───
+
+@register_provider("claude-cli")
+class ClaudeCLIProvider(BaseProvider):
+    """Use your Claude subscription via the 'claude' CLI command.
+
+    No API key needed — uses your existing Claude Code / Claude Max login.
+    Requires 'claude' CLI installed and authenticated on this machine.
+    """
+    LABEL = "Claude CLI (Your Subscription)"
+    NEEDS_API_KEY = False
+    DEFAULT_MODEL = "claude-sonnet-4-20250514"
+    MODEL_HELP = "Uses your Claude subscription. Model: claude-sonnet-4, claude-opus-4"
+
+    def chat(self, messages: list[dict], **kwargs) -> str:
+        return self._retry(self._do_chat, messages, **kwargs)
+
+    def _do_chat(self, messages: list[dict], **kwargs) -> str:
+        # Build prompt from messages
+        parts = []
+        for m in messages:
+            if m["role"] == "system":
+                parts.append(f"[System]\n{m['content']}")
+            elif m["role"] == "user":
+                parts.append(f"[User]\n{m['content']}")
+            elif m["role"] == "assistant":
+                parts.append(f"[Assistant]\n{m['content']}")
+        prompt = "\n\n".join(parts)
+
+        # Write to temp file to avoid shell escaping issues
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False,
+                                         encoding="utf-8") as f:
+            f.write(prompt)
+            tmp_path = f.name
+
+        try:
+            result = subprocess.run(
+                ["claude", "-p", f"@{tmp_path}", "--output-format", "stream-json"],
+                capture_output=True, text=True, timeout=self.timeout,
+                encoding="utf-8", errors="replace",
+            )
+
+            # Parse stream-json output
+            for line in result.stdout.strip().split("\n"):
+                try:
+                    evt = json.loads(line)
+                    if evt.get("type") == "result":
+                        return evt.get("result", "")
+                except json.JSONDecodeError:
+                    continue
+
+            # Fallback: try plain text output
+            if result.stdout.strip():
+                return result.stdout.strip()
+
+            if result.stderr.strip():
+                return f"[error] {result.stderr.strip()[:500]}"
+
+            return "[error] No response from Claude CLI"
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    def validate(self) -> tuple[bool, str]:
+        # Check if claude CLI is available
+        try:
+            result = subprocess.run(
+                ["claude", "--version"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                return True, ""
+            return False, "Claude CLI not responding"
+        except FileNotFoundError:
+            return False, "Claude CLI not installed. Install: npm install -g @anthropic-ai/claude-code"
+        except Exception as e:
+            return False, f"Claude CLI check failed: {e}"
+
+
 # ── Custom Endpoint (any OpenAI-compatible local proxy) ──────
 
 @register_provider("custom")
