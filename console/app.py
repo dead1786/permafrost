@@ -31,6 +31,27 @@ st.set_page_config(
 DATA_DIR = Path(os.environ.get("PF_DATA_DIR", os.path.expanduser("~/.permafrost")))
 CONFIG_FILE = DATA_DIR / "config.json"
 
+
+def safe_read_json(path: Path, default=None):
+    """Read JSON file with BOM/encoding tolerance. Returns default on any error."""
+    if default is None:
+        default = []
+    if not path.exists():
+        return default
+    try:
+        raw = path.read_bytes()
+        for enc in ("utf-8-sig", "utf-8", "utf-16", "latin-1"):
+            try:
+                text = raw.decode(enc)
+                break
+            except (UnicodeDecodeError, ValueError):
+                continue
+        else:
+            return default
+        return json.loads(text)
+    except (json.JSONDecodeError, OSError, TypeError):
+        return default
+
 # ── Styles ──
 st.markdown("""
 <style>
@@ -271,26 +292,11 @@ elif page == "chat":
     # Load chat history
     chat_file = DATA_DIR / "chat-history.json"
     if "messages" not in st.session_state:
-        if chat_file.exists():
-            try:
-                raw = chat_file.read_bytes()
-                for enc in ("utf-8-sig", "utf-8", "utf-16", "latin-1"):
-                    try:
-                        text = raw.decode(enc)
-                        break
-                    except (UnicodeDecodeError, ValueError):
-                        continue
-                else:
-                    text = "[]"
-                loaded = json.loads(text)[-50:]
-                st.session_state.messages = [
-                    m for m in loaded
-                    if not (m.get("role") == "assistant" and m.get("content", "").startswith("[error]"))
-                ]
-            except (json.JSONDecodeError, OSError, TypeError):
-                st.session_state.messages = []
-        else:
-            st.session_state.messages = []
+        loaded = safe_read_json(chat_file)[-50:]
+        st.session_state.messages = [
+            m for m in loaded
+            if not (m.get("role") == "assistant" and m.get("content", "").startswith("[error]"))
+        ]
 
     # Clear chat button
     col1, col2 = st.columns([8, 1])
@@ -330,7 +336,7 @@ elif page == "chat":
         inbox = []
         if inbox_file.exists():
             try:
-                inbox = json.loads(inbox_file.read_text(encoding="utf-8"))
+                inbox = safe_read_json(inbox_file)
             except (json.JSONDecodeError, OSError):
                 inbox = []
         inbox.append({
@@ -359,7 +365,7 @@ elif page == "chat":
             for _ in range(60):  # wait up to 60 seconds
                 if outbox_file.exists():
                     try:
-                        outbox = json.loads(outbox_file.read_text(encoding="utf-8"))
+                        outbox = safe_read_json(outbox_file)
                         unread = [m for m in outbox if not m.get("read", False)]
                         if unread:
                             response = unread[-1]["text"]
@@ -398,7 +404,7 @@ elif page == "schedule":
     schedule_file = DATA_DIR / "schedule.json"
     if schedule_file.exists():
         try:
-            schedule = json.loads(schedule_file.read_text(encoding="utf-8"))
+            schedule = safe_read_json(schedule_file)
             tasks = schedule.get("tasks", schedule) if isinstance(schedule, dict) else schedule
             if isinstance(tasks, list) and tasks:
                 for t in tasks:
@@ -431,7 +437,7 @@ elif page == "status":
     hb_file = DATA_DIR / "brain-heartbeat.json"
     if hb_file.exists():
         try:
-            hb = json.loads(hb_file.read_text(encoding="utf-8"))
+            hb = safe_read_json(hb_file, {})
             age = (datetime.now() - datetime.fromisoformat(hb["timestamp"])).total_seconds()
             status = "Online" if age < 180 else "Offline"
             provider = hb.get("provider", "?")
@@ -446,7 +452,7 @@ elif page == "status":
     sh_file = DATA_DIR / "scheduler-heartbeat.json"
     if sh_file.exists():
         try:
-            sh = json.loads(sh_file.read_text(encoding="utf-8"))
+            sh = safe_read_json(sh_file, {})
             age = (datetime.now() - datetime.fromisoformat(sh["timestamp"])).total_seconds()
             col2.metric("Scheduler", "Online" if age < 180 else "Offline", f"{age:.0f}s ago")
         except (json.JSONDecodeError, KeyError, OSError):
@@ -513,7 +519,7 @@ elif page == "status":
     msg_log = DATA_DIR / "message-log.json"
     if msg_log.exists():
         try:
-            msgs = json.loads(msg_log.read_text(encoding="utf-8"))[-15:]
+            msgs = safe_read_json(msg_log)[-15:]
             for m in reversed(msgs):
                 icon = "\U0001f4e5" if m.get("direction") == "in" else "\U0001f4e4"
                 ts = m.get("timestamp", "")[:16]
