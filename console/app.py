@@ -337,8 +337,15 @@ def render_setup():
             # Save persona answers for re-editing
             for q_id, ans in persona_answers.items():
                 new_config[f"persona_{q_id}"] = ans
-            # Update all channel configs (including empty values to clear old settings)
-            new_config.update(channel_configs)
+            # Update channel configs — preserve existing passwords if form field is empty
+            for k, v in channel_configs.items():
+                if v:  # has value — always update
+                    new_config[k] = v
+                elif k.endswith("_enabled"):  # enabled flags — always update
+                    new_config[k] = v
+                elif not v and k not in new_config:  # new key with no value — set it
+                    new_config[k] = v
+                # else: empty value + key already exists = keep old value (password not re-displayed)
             save_config(new_config)
             # Write reload trigger so brain picks up new config without restart
             try:
