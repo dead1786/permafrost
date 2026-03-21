@@ -271,8 +271,18 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 # ── Temporal Decay ────────────────────────────────────────────────
 
 
-def temporal_decay(created_at: str, half_life_days: float = 30.0) -> float:
-    """Exponential decay based on age. Returns weight in (0, 1]."""
+def temporal_decay(created_at: str, half_life_days: float = 30.0,
+                   metadata: dict = None) -> float:
+    """Exponential decay based on age. Returns weight in (0, 1].
+
+    Evergreen memories (L1/L2) never decay — always return 1.0.
+    Only L3+ dynamic memories decay over time.
+    """
+    # Evergreen: core rules and verified knowledge never decay
+    if metadata:
+        layer = metadata.get("layer", "")
+        if layer in ("L1", "L2"):
+            return 1.0
     try:
         created = datetime.fromisoformat(created_at)
         age_days = (datetime.now() - created).total_seconds() / 86400
@@ -289,9 +299,21 @@ def mmr_rerank(query_embedding: list[float], candidates: list[dict],
     """Maximal Marginal Relevance reranking for result diversity.
 
     lambda_param: balance between relevance (1.0) and diversity (0.0).
+    Scores are normalized to [0,1] before MMR (OpenClaw pattern).
     """
     if not candidates or top_k <= 0:
         return []
+
+    # Normalize scores to [0, 1] (OpenClaw pattern)
+    scores = [c.get("score", 0) for c in candidates]
+    max_score = max(scores) if scores else 1
+    min_score = min(scores) if scores else 0
+    score_range = max_score - min_score
+    for c in candidates:
+        if score_range > 0:
+            c["_norm_score"] = (c.get("score", 0) - min_score) / score_range
+        else:
+            c["_norm_score"] = 1.0
 
     selected = []
     remaining = list(candidates)
@@ -301,7 +323,7 @@ def mmr_rerank(query_embedding: list[float], candidates: list[dict],
         best_idx = 0
 
         for i, cand in enumerate(remaining):
-            relevance = cosine_similarity(query_embedding, cand["embedding"])
+            relevance = cand.get("_norm_score", cosine_similarity(query_embedding, cand["embedding"]))
 
             # Max similarity to already-selected items
             max_sim = 0.0
@@ -429,10 +451,11 @@ class PFVectorSearch:
             temp_score = temporal_decay(
                 entry.get("created_at", ""),
                 self.decay_half_life,
+                metadata=entry.get("metadata"),
             )
 
-            # Normalize BM25 (rough: cap at 10)
-            bm_norm = min(bm_score / 10.0, 1.0)
+            # Normalize BM25 using OpenClaw's formula: relevance / (1 + relevance)
+            bm_norm = bm_score / (1 + bm_score) if bm_score > 0 else 0.0
 
             # Weighted combination
             combined = (
@@ -454,7 +477,12 @@ class PFVectorSearch:
             })
 
         # Filter by minimum score threshold
-        scored = [s for s in scored if s["score"] >= self.min_score]
+        # Relax minScore for keyword hits (OpenClaw pattern: prevent pure keyword
+        # results from being filtered when textWeight < minScore)
+        relaxed_min = min(self.min_score, self.bm25_weight)
+        scored = [s for s in scored
+                  if s["score"] >= self.min_score or
+                  (s.get("bm25_score", 0) > 0 and s["score"] >= relaxed_min)]
 
         # Sort by combined score
         scored.sort(key=lambda x: x["score"], reverse=True)
