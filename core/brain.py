@@ -173,17 +173,28 @@ class PFBrain:
             if not inbox_path.exists():
                 continue
             try:
-                with open(inbox_path, "r", encoding="utf-8") as f:
-                    messages = json.load(f)
-                if not messages:
+                raw = inbox_path.read_bytes()
+                # Handle BOM and encoding issues gracefully
+                for enc in ("utf-8-sig", "utf-8", "utf-16", "latin-1"):
+                    try:
+                        text = raw.decode(enc)
+                        break
+                    except (UnicodeDecodeError, ValueError):
+                        continue
+                else:
+                    text = "[]"
+                messages = json.loads(text)
+                if not isinstance(messages, list) or not messages:
                     continue
                 unread = [m for m in messages if not m.get("read", False)]
                 if unread:
                     results.append((name, unread, messages))
-            except json.JSONDecodeError:
-                log.warning(f"malformed inbox: {inbox_path}")
-            except OSError:
-                pass
+            except (json.JSONDecodeError, OSError):
+                # Corrupted inbox — reset it
+                try:
+                    inbox_path.write_text("[]", encoding="utf-8")
+                except OSError:
+                    pass
         return results
 
     def _mark_read(self, inbox_path: Path, messages: list):
