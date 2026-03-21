@@ -17,3 +17,9 @@ pycloudflared>=0.2.0
 
 # Vector search (local embedding for semantic memory retrieval)
 sentence-transformers>=2.2.0
+
+# Document tools (optional - graceful fallback if missing)
+fpdf2>=2.7.0           # PDF creation
+python-docx>=1.0.0     # Word document creation
+openpyxl>=3.1.0        # Excel read/write
+pypdf>=4.0.0           # PDF reading

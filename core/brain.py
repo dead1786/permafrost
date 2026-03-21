@@ -31,6 +31,7 @@ from .tools import execute_tool, get_tool_prompt, get_tools_schema, parse_tool_c
 from .compactor import PFCompactor
 from .agents import PFAgentManager, agent_memory_maintenance, agent_context_extractor, agent_health_check
 from .plugins import PFPluginManager
+from .mcp_client import PFMCPManager
 from smart.default_prompt import build_default_prompt
 
 log = logging.getLogger("permafrost.brain")
@@ -650,6 +651,17 @@ class PFBrain:
                 log.info(f"Plugins loaded: {loaded}")
         except Exception as e:
             log.warning(f"Plugin loading failed: {e}")
+
+        # Connect MCP servers and register their tools
+        try:
+            self._mcp = PFMCPManager(config=self.config, data_dir=str(self.data_dir))
+            self._mcp.start_all()
+            mcp_tool_count = self._mcp.register_tools()
+            if mcp_tool_count:
+                log.info(f"MCP tools registered: {mcp_tool_count}")
+        except Exception as e:
+            log.warning(f"MCP init failed: {e}")
+            self._mcp = None
 
         try:
             while self.running:

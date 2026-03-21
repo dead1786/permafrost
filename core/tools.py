@@ -398,6 +398,246 @@ def tool_grep_files(pattern: str, path: str = ".", file_pattern: str = "*", **kw
         return f"[error] {e}"
 
 
+# ── Document & Media Tools ────────────────────────────────────
+
+@register_tool("create_pdf", "Create a PDF document from text or HTML content", {
+    "path": {"type": "string", "description": "Output PDF file path"},
+    "content": {"type": "string", "description": "Text content (or HTML if starts with '<')"},
+    "title": {"type": "string", "description": "Document title (optional)"},
+})
+def tool_create_pdf(path: str, content: str, title: str = "", **kwargs) -> str:
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet
+
+        doc = SimpleDocTemplate(path, pagesize=A4)
+        styles = getSampleStyleSheet()
+        story = []
+        if title:
+            story.append(Paragraph(title, styles["Title"]))
+            story.append(Spacer(1, 0.5 * cm))
+        for line in content.split("\n"):
+            if line.strip():
+                story.append(Paragraph(line, styles["Normal"]))
+                story.append(Spacer(1, 0.2 * cm))
+        doc.build(story)
+        return f"PDF created: {path}"
+    except ImportError:
+        # Fallback: use fpdf2 (lighter dependency)
+        try:
+            from fpdf import FPDF
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_auto_page_break(auto=True, margin=15)
+            # Try to add unicode font
+            try:
+                pdf.add_font("NotoSans", "", os.path.join(os.path.dirname(__file__), "fonts", "NotoSansCJK-Regular.ttc"), uni=True)
+                pdf.set_font("NotoSans", size=12)
+            except Exception:
+                pdf.set_font("Helvetica", size=12)
+            if title:
+                pdf.set_font_size(18)
+                pdf.cell(0, 10, title, ln=True, align="C")
+                pdf.set_font_size(12)
+                pdf.ln(5)
+            for line in content.split("\n"):
+                pdf.multi_cell(0, 7, line)
+            pdf.output(path)
+            return f"PDF created: {path}"
+        except ImportError:
+            return "[error] Install reportlab or fpdf2: pip install reportlab fpdf2"
+
+
+@register_tool("create_spreadsheet", "Create an Excel/CSV spreadsheet", {
+    "path": {"type": "string", "description": "Output file path (.xlsx or .csv)"},
+    "data": {"type": "string", "description": "JSON array of rows, e.g. [[\"Name\",\"Age\"],[\"Alice\",30]]"},
+    "sheet_name": {"type": "string", "description": "Sheet name (xlsx only, default: Sheet1)"},
+})
+def tool_create_spreadsheet(path: str, data: str, sheet_name: str = "Sheet1", **kwargs) -> str:
+    try:
+        rows = json.loads(data)
+        if not isinstance(rows, list):
+            return "[error] Data must be a JSON array of rows"
+
+        if path.endswith(".csv"):
+            import csv
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f)
+                for row in rows:
+                    writer.writerow(row)
+            return f"CSV created: {path} ({len(rows)} rows)"
+        else:
+            try:
+                import openpyxl
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                ws.title = sheet_name
+                for row in rows:
+                    ws.append(row)
+                wb.save(path)
+                return f"Excel created: {path} ({len(rows)} rows)"
+            except ImportError:
+                # Fallback to CSV
+                import csv
+                csv_path = path.rsplit(".", 1)[0] + ".csv"
+                with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+                    writer = csv.writer(f)
+                    for row in rows:
+                        writer.writerow(row)
+                return f"openpyxl not installed, saved as CSV: {csv_path} ({len(rows)} rows)"
+    except json.JSONDecodeError as e:
+        return f"[error] Invalid JSON data: {e}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("read_spreadsheet", "Read an Excel or CSV file", {
+    "path": {"type": "string", "description": "File path (.xlsx, .xls, .csv)"},
+    "sheet": {"type": "string", "description": "Sheet name (xlsx only, default: first sheet)"},
+    "max_rows": {"type": "number", "description": "Max rows to read (default: 50)"},
+})
+def tool_read_spreadsheet(path: str, sheet: str = "", max_rows: int = 50, **kwargs) -> str:
+    try:
+        if path.endswith(".csv"):
+            import csv
+            with open(path, "r", encoding="utf-8-sig") as f:
+                reader = csv.reader(f)
+                rows = [row for _, row in zip(range(int(max_rows)), reader)]
+            return json.dumps(rows, ensure_ascii=False)
+        else:
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(path, read_only=True)
+                ws = wb[sheet] if sheet and sheet in wb.sheetnames else wb.active
+                rows = []
+                for i, row in enumerate(ws.iter_rows(values_only=True)):
+                    if i >= int(max_rows):
+                        break
+                    rows.append([str(c) if c is not None else "" for c in row])
+                return json.dumps(rows, ensure_ascii=False)
+            except ImportError:
+                return "[error] Install openpyxl: pip install openpyxl"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("create_document", "Create a Word document (.docx)", {
+    "path": {"type": "string", "description": "Output .docx file path"},
+    "content": {"type": "string", "description": "Document content (paragraphs separated by newlines)"},
+    "title": {"type": "string", "description": "Document title (optional)"},
+})
+def tool_create_document(path: str, content: str, title: str = "", **kwargs) -> str:
+    try:
+        from docx import Document
+        doc = Document()
+        if title:
+            doc.add_heading(title, 0)
+        for para in content.split("\n"):
+            if para.strip():
+                if para.startswith("## "):
+                    doc.add_heading(para[3:], level=2)
+                elif para.startswith("# "):
+                    doc.add_heading(para[2:], level=1)
+                elif para.startswith("- "):
+                    doc.add_paragraph(para[2:], style="List Bullet")
+                else:
+                    doc.add_paragraph(para)
+        doc.save(path)
+        return f"Word document created: {path}"
+    except ImportError:
+        return "[error] Install python-docx: pip install python-docx"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("read_pdf", "Read text content from a PDF file", {
+    "path": {"type": "string", "description": "PDF file path"},
+    "max_pages": {"type": "number", "description": "Max pages to read (default: 20)"},
+})
+def tool_read_pdf(path: str, max_pages: int = 20, **kwargs) -> str:
+    try:
+        try:
+            import fitz  # PyMuPDF
+            doc = fitz.open(path)
+            texts = []
+            for i, page in enumerate(doc):
+                if i >= int(max_pages):
+                    break
+                texts.append(page.get_text())
+            return "\n---\n".join(texts)[:8000]
+        except ImportError:
+            pass
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(path)
+            texts = []
+            for i, page in enumerate(reader.pages):
+                if i >= int(max_pages):
+                    break
+                texts.append(page.extract_text() or "")
+            return "\n---\n".join(texts)[:8000]
+        except ImportError:
+            return "[error] Install PyMuPDF or pypdf: pip install pymupdf pypdf"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("read_image", "Read/describe an image file (returns base64 or OCR text)", {
+    "path": {"type": "string", "description": "Image file path"},
+    "mode": {"type": "string", "description": "info (default), ocr, or base64"},
+})
+def tool_read_image(path: str, mode: str = "info", **kwargs) -> str:
+    try:
+        from PIL import Image
+        img = Image.open(path)
+        info = f"Size: {img.size[0]}x{img.size[1]}, Mode: {img.mode}, Format: {img.format or 'unknown'}"
+
+        if mode == "base64":
+            import base64, io
+            buf = io.BytesIO()
+            img.save(buf, format=img.format or "PNG")
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            return f"{info}\nBase64: {b64[:200]}... ({len(b64)} chars total)"
+        elif mode == "ocr":
+            try:
+                import pytesseract
+                text = pytesseract.image_to_string(img)
+                return f"{info}\nOCR Text:\n{text[:4000]}"
+            except ImportError:
+                return f"{info}\n[OCR unavailable — install pytesseract]"
+        else:
+            return info
+    except ImportError:
+        return "[error] Install Pillow: pip install Pillow"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("resize_image", "Resize an image to specified dimensions", {
+    "path": {"type": "string", "description": "Input image path"},
+    "output": {"type": "string", "description": "Output image path"},
+    "width": {"type": "number", "description": "Target width in pixels"},
+    "height": {"type": "number", "description": "Target height in pixels (0 = auto aspect ratio)"},
+})
+def tool_resize_image(path: str, output: str, width: int = 800, height: int = 0, **kwargs) -> str:
+    try:
+        from PIL import Image
+        img = Image.open(path)
+        w, h = int(width), int(height)
+        if h <= 0:
+            ratio = w / img.size[0]
+            h = int(img.size[1] * ratio)
+        img = img.resize((w, h), Image.LANCZOS)
+        img.save(output)
+        return f"Resized to {w}x{h}: {output}"
+    except ImportError:
+        return "[error] Install Pillow: pip install Pillow"
+    except Exception as e:
+        return f"[error] {e}"
+
+
 # ── Self-Tool-Creation (Meta-Tool) ───────────────────────────
 
 @register_tool("create_tool", "Create a new custom tool that persists across restarts", {
