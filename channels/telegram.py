@@ -32,9 +32,9 @@ class PFTelegram(BaseChannel):
     def __init__(self, config: dict, data_dir: str = None):
         super().__init__(config, data_dir)
         self.bot_token = config.get("telegram_token", "")
-        self._auto_detect_chat_id(config)
         self.chat_id = str(config.get("telegram_chat_id", ""))
         self.api_base = f"https://api.telegram.org/bot{self.bot_token}"
+        self._auto_detect_chat_id(config)
         self.last_update_id = 0
         self.poll_interval = int(config.get("telegram_poll_interval", 2))
         self.parse_mode = config.get("telegram_parse_mode", "")
