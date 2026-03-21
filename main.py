@@ -210,6 +210,8 @@ def main():
 
     log.info("")
     log.info("All services started. Press Ctrl+C to stop.")
+    if not args.no_console:
+        log.info(f"  Web Console: http://localhost:{args.console_port}")
     log.info("")
 
     # ── Run brain (blocking) ──
