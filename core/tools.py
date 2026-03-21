@@ -398,6 +398,224 @@ def tool_grep_files(pattern: str, path: str = ".", file_pattern: str = "*", **kw
         return f"[error] {e}"
 
 
+# ── System & OS Tools ─────────────────────────────────────────
+
+@register_tool("download_file", "Download a file from a URL to local disk", {
+    "url": {"type": "string", "description": "URL to download"},
+    "path": {"type": "string", "description": "Local path to save the file"},
+})
+def tool_download_file(url: str, path: str, **kwargs) -> str:
+    import requests
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        r = requests.get(url, stream=True, timeout=30, headers={"User-Agent": "Permafrost/1.0"})
+        r.raise_for_status()
+        total = 0
+        with open(path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+                total += len(chunk)
+        size_kb = total / 1024
+        return f"Downloaded {size_kb:.1f} KB to {path}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("system_info", "Get system information (CPU, memory, disk, OS)", {})
+def tool_system_info(**kwargs) -> str:
+    import platform
+    lines = [
+        f"OS: {platform.system()} {platform.release()} ({platform.machine()})",
+        f"Python: {platform.python_version()}",
+        f"Hostname: {platform.node()}",
+    ]
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        disk = psutil.disk_usage("/")
+        lines.append(f"CPU: {psutil.cpu_count()} cores, {psutil.cpu_percent()}% used")
+        lines.append(f"RAM: {mem.used/1e9:.1f}/{mem.total/1e9:.1f} GB ({mem.percent}%)")
+        lines.append(f"Disk: {disk.used/1e9:.1f}/{disk.total/1e9:.1f} GB ({disk.percent}%)")
+    except ImportError:
+        lines.append("(install psutil for CPU/RAM/disk details)")
+    return "\n".join(lines)
+
+
+@register_tool("process_list", "List running processes (optional filter)", {
+    "filter": {"type": "string", "description": "Filter by process name (optional)"},
+})
+def tool_process_list(filter: str = "", **kwargs) -> str:
+    try:
+        import psutil
+        procs = []
+        for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_info"]):
+            try:
+                info = p.info
+                if filter and filter.lower() not in info["name"].lower():
+                    continue
+                mem_mb = info["memory_info"].rss / 1e6 if info.get("memory_info") else 0
+                procs.append(f"  PID {info['pid']:6d} | {info['name'][:25]:25s} | {mem_mb:.0f} MB")
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        procs.sort()
+        return f"Processes ({len(procs)}):\n" + "\n".join(procs[:30])
+    except ImportError:
+        return tool_bash(command='tasklist /FO TABLE /NH' if os.name == 'nt' else 'ps aux --sort=-rss | head -20')
+
+
+@register_tool("kill_process", "Kill a process by PID", {
+    "pid": {"type": "number", "description": "Process ID to kill"},
+})
+def tool_kill_process(pid: int, **kwargs) -> str:
+    try:
+        import psutil
+        p = psutil.Process(int(pid))
+        name = p.name()
+        p.terminate()
+        return f"Terminated: {name} (PID {pid})"
+    except ImportError:
+        return tool_bash(command=f'taskkill /PID {int(pid)} /F' if os.name == 'nt' else f'kill {int(pid)}')
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("compress", "Compress files/directories into a zip archive", {
+    "path": {"type": "string", "description": "File or directory to compress"},
+    "output": {"type": "string", "description": "Output zip file path"},
+})
+def tool_compress(path: str, output: str, **kwargs) -> str:
+    import zipfile
+    try:
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
+            if os.path.isdir(path):
+                for root, dirs, files in os.walk(path):
+                    for f in files:
+                        fp = os.path.join(root, f)
+                        arc = os.path.relpath(fp, os.path.dirname(path))
+                        zf.write(fp, arc)
+            else:
+                zf.write(path, os.path.basename(path))
+        size_kb = os.path.getsize(output) / 1024
+        return f"Compressed to {output} ({size_kb:.1f} KB)"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("extract", "Extract a zip/tar archive", {
+    "path": {"type": "string", "description": "Archive file path (.zip, .tar.gz, .tar)"},
+    "output": {"type": "string", "description": "Directory to extract to"},
+})
+def tool_extract(path: str, output: str, **kwargs) -> str:
+    try:
+        os.makedirs(output, exist_ok=True)
+        if path.endswith(".zip"):
+            import zipfile
+            with zipfile.ZipFile(path, "r") as zf:
+                zf.extractall(output)
+                return f"Extracted {len(zf.namelist())} files to {output}"
+        elif path.endswith((".tar.gz", ".tgz", ".tar")):
+            import tarfile
+            with tarfile.open(path, "r:*") as tf:
+                tf.extractall(output)
+                return f"Extracted to {output}"
+        return f"[error] Unsupported archive type: {path}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("diff_files", "Compare two files and show differences", {
+    "file1": {"type": "string", "description": "First file path"},
+    "file2": {"type": "string", "description": "Second file path"},
+})
+def tool_diff_files(file1: str, file2: str, **kwargs) -> str:
+    import difflib
+    try:
+        with open(file1, "r", encoding="utf-8", errors="replace") as f:
+            lines1 = f.readlines()
+        with open(file2, "r", encoding="utf-8", errors="replace") as f:
+            lines2 = f.readlines()
+        diff = list(difflib.unified_diff(lines1, lines2, fromfile=file1, tofile=file2, lineterm=""))
+        if not diff:
+            return "Files are identical."
+        return "\n".join(diff[:100])
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("file_hash", "Calculate file hash (MD5, SHA256)", {
+    "path": {"type": "string", "description": "File path"},
+    "algorithm": {"type": "string", "description": "md5 or sha256 (default: sha256)"},
+})
+def tool_file_hash(path: str, algorithm: str = "sha256", **kwargs) -> str:
+    import hashlib
+    try:
+        h = hashlib.new(algorithm)
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        size_kb = os.path.getsize(path) / 1024
+        return f"{algorithm.upper()}: {h.hexdigest()}\nSize: {size_kb:.1f} KB"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("clipboard", "Read or write system clipboard", {
+    "action": {"type": "string", "description": "read or write"},
+    "text": {"type": "string", "description": "Text to write (only for write action)"},
+})
+def tool_clipboard(action: str = "read", text: str = "", **kwargs) -> str:
+    try:
+        if action == "write" and text:
+            if os.name == "nt":
+                process = subprocess.Popen(["clip"], stdin=subprocess.PIPE)
+                process.communicate(text.encode("utf-16-le"))
+            else:
+                process = subprocess.Popen(["xclip", "-selection", "clipboard"], stdin=subprocess.PIPE)
+                process.communicate(text.encode("utf-8"))
+            return f"Copied {len(text)} chars to clipboard"
+        else:
+            if os.name == "nt":
+                result = subprocess.run(["powershell", "-command", "Get-Clipboard"], capture_output=True, text=True, timeout=5)
+                return result.stdout.strip() or "[clipboard empty]"
+            else:
+                result = subprocess.run(["xclip", "-selection", "clipboard", "-o"], capture_output=True, text=True, timeout=5)
+                return result.stdout.strip() or "[clipboard empty]"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("screenshot", "Take a screenshot of the screen", {
+    "path": {"type": "string", "description": "Output image path (default: screenshot.png)"},
+})
+def tool_screenshot(path: str = "screenshot.png", **kwargs) -> str:
+    try:
+        from PIL import ImageGrab
+        img = ImageGrab.grab()
+        img.save(path)
+        return f"Screenshot saved: {path} ({img.size[0]}x{img.size[1]})"
+    except ImportError:
+        try:
+            if os.name == "nt":
+                result = subprocess.run(
+                    ["powershell", "-command",
+                     f"Add-Type -AssemblyName System.Windows.Forms; "
+                     f"[System.Windows.Forms.Screen]::PrimaryScreen | ForEach-Object {{ "
+                     f"$b = New-Object System.Drawing.Bitmap($_.Bounds.Width, $_.Bounds.Height); "
+                     f"$g = [System.Drawing.Graphics]::FromImage($b); "
+                     f"$g.CopyFromScreen($_.Bounds.Location, [System.Drawing.Point]::Empty, $_.Bounds.Size); "
+                     f"$b.Save('{path}') }}"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if os.path.exists(path):
+                    return f"Screenshot saved: {path}"
+                return f"[error] Screenshot failed: {result.stderr}"
+            return "[error] Install Pillow: pip install Pillow"
+        except Exception as e:
+            return f"[error] {e}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
 # ── Document & Media Tools ────────────────────────────────────
 
 @register_tool("create_pdf", "Create a PDF document from text or HTML content", {

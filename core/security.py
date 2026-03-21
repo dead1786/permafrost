@@ -49,6 +49,9 @@ DEFAULT_TOOL_WHITELIST = {
         "send_notification", "create_tool",
         "create_pdf", "create_spreadsheet", "read_spreadsheet",
         "create_document", "read_pdf", "read_image", "resize_image",
+        "download_file", "system_info", "process_list", "kill_process",
+        "compress", "extract", "diff_files", "file_hash",
+        "clipboard", "screenshot",
     ],
     "standard": [
         "read_file", "write_file", "edit_file", "search", "list_files",
