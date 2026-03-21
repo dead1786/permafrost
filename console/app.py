@@ -350,13 +350,8 @@ elif page == "chat":
                         unread = [m for m in outbox if not m.get("read", False)]
                         if unread:
                             response = unread[-1]["text"]
-                            # Mark as read
-                            for m in outbox:
-                                m["read"] = True
-                            outbox_file.write_text(
-                                json.dumps(outbox, ensure_ascii=False, indent=2),
-                                encoding="utf-8"
-                            )
+                            # Clear outbox completely to prevent stale messages
+                            outbox_file.write_text("[]", encoding="utf-8")
                             break
                     except (json.JSONDecodeError, OSError):
                         pass
@@ -368,16 +363,17 @@ elif page == "chat":
                 else:
                     placeholder.write(response)
                     st.session_state.messages.append({"role": "assistant", "content": response})
-                # Update chat history
-                try:
-                    history = st.session_state.messages[-200:]
-                    chat_file.write_text(
-                        json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
-                    )
-                except OSError:
-                    pass
+                    # Update chat history
+                    try:
+                        history = st.session_state.messages[-200:]
+                        chat_file.write_text(
+                            json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
+                        )
+                    except OSError:
+                        pass
             else:
                 placeholder.write("\u26a0\ufe0f No response from brain. Is it running?")
+            st.rerun()
 
 
 # ══════════════════════════════════════════
