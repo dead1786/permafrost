@@ -361,11 +361,24 @@ class PFLine(BaseChannel):
         self.webhook_url = f"{public_url}/webhook"
         log.info(f"tunnel open: {self.webhook_url}")
 
-        # 3. Register webhook URL with LINE
-        if not self._register_webhook_url(self.webhook_url):
-            log.warning("webhook URL registration failed — incoming messages may not work")
+        # 3. Display webhook URL for user to set in LINE Developers Console
+        log.info("=" * 60)
+        log.info("LINE Webhook URL (paste this in LINE Developers Console):")
+        log.info(f"  {self.webhook_url}")
+        log.info("=" * 60)
 
-        log.info(f"LINE channel ready — webhook: {self.webhook_url}")
+        # Save webhook URL to config for Settings page display
+        try:
+            import json as _json
+            config_file = self.data_dir / "config.json"
+            if config_file.exists():
+                cfg = _json.loads(config_file.read_text(encoding="utf-8"))
+                cfg["line_webhook_url"] = self.webhook_url
+                config_file.write_text(_json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+        log.info(f"LINE channel ready — waiting for messages")
 
         # 4. Keep alive
         try:
