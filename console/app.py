@@ -574,6 +574,11 @@ def render_status():
             channel_status.append(f"\u26aa {ch_info['label']}")
     st.write(" | ".join(channel_status))
 
+    # LINE webhook URL display
+    line_webhook = config.get("line_webhook_url", "")
+    if config.get("line_enabled") and line_webhook:
+        st.info(f"**LINE Webhook URL** (paste in LINE Developers Console):\n\n`{line_webhook}`")
+
     # Service controls
     st.markdown(f"#### {t('controls', _lang)}")
     ctrl1, ctrl2 = st.columns(2)
