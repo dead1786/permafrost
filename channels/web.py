@@ -59,26 +59,8 @@ class PFWeb(BaseChannel):
             return False
 
     def reply_handler(self, response: str, original_msg: dict = None):
-        """Write response to outbox and also update chat history."""
+        """Write response to outbox only. Console manages chat history."""
         self.send_message(response)
-
-        # Also append to chat history for UI display
-        history_file = self.data_dir / "chat-history.json"
-        try:
-            history = []
-            if history_file.exists():
-                try:
-                    history = json.loads(history_file.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError):
-                    history = []
-            history.append({"role": "assistant", "content": response,
-                           "timestamp": datetime.now().isoformat()})
-            history = history[-200:]
-            history_file.write_text(
-                json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        except OSError:
-            pass
 
     def run(self):
         """Web channel doesn't need a polling loop — console handles UI."""
