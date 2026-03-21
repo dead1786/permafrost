@@ -265,11 +265,37 @@ class PFBrain:
             return True
         return False
 
+    def _check_duplicate(self):
+        """Prevent duplicate brain processes."""
+        if self.pid_file.exists():
+            try:
+                old_pid = json.loads(self.pid_file.read_text(encoding="utf-8")).get("pid", 0)
+                if old_pid and old_pid != os.getpid():
+                    import psutil
+                    try:
+                        p = psutil.Process(old_pid)
+                        if p.is_running() and "main.py" in " ".join(p.cmdline()):
+                            log.warning(f"Brain already running (PID {old_pid}), aborting duplicate")
+                            return False
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+            except Exception:
+                pass
+        return True
+
     def run(self):
         """Main brain loop."""
+        if not self._check_duplicate():
+            return
+
         self.running = True
         self._write_pid()
         self._setup_signal_handlers()
+
+        # Write heartbeat immediately so watchdog doesn't restart us
+        self.last_heartbeat = 0
+        self._write_heartbeat()
+
         log.info(f"Permafrost Brain started (PID {os.getpid()})")
         log.info(f"Provider: {self.config['ai_provider']} / Model: {self.provider.model}")
         log.info(f"Data dir: {self.data_dir}")
