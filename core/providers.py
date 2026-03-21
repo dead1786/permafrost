@@ -83,6 +83,32 @@ class BaseProvider(ABC):
         """
         ...
 
+    # Whether this provider supports native function calling
+    SUPPORTS_TOOLS: bool = False
+
+    def chat_with_tools(self, messages: list[dict], tools: list[dict] = None,
+                        **kwargs) -> dict:
+        """Send messages with native tool/function calling support.
+
+        Args:
+            messages: Conversation messages
+            tools: List of tool schemas for function calling
+
+        Returns:
+            {
+                "text": str,             # AI text response
+                "tool_calls": [          # List of tool calls (empty if none)
+                    {"name": str, "args": dict},
+                    ...
+                ]
+            }
+
+        Default: falls back to regular chat() (no native tool support).
+        Override in subclasses for native function calling.
+        """
+        response_text = self.chat(messages, **kwargs)
+        return {"text": response_text, "tool_calls": []}
+
     def simple(self, prompt: str, **kwargs) -> str:
         """Convenience: single prompt in, response out."""
         return self.chat([{"role": "user", "content": prompt}], **kwargs)
@@ -126,6 +152,7 @@ class BaseProvider(ABC):
 class ClaudeProvider(BaseProvider):
     LABEL = "Claude (Anthropic)"
     NEEDS_API_KEY = True
+    SUPPORTS_TOOLS = True
     DEFAULT_MODEL = "claude-sonnet-4-20250514"
     MODEL_HELP = "e.g. claude-sonnet-4-20250514, claude-opus-4-20250514"
 
@@ -139,7 +166,6 @@ class ClaudeProvider(BaseProvider):
             return self._chat_via_cli(messages)
 
         client = anthropic.Anthropic(api_key=self.api_key)
-        # Separate system message
         system = ""
         chat_msgs = []
         for m in messages:
@@ -157,12 +183,52 @@ class ClaudeProvider(BaseProvider):
             params["system"] = system
 
         response = client.messages.create(**params)
-        # Track token usage (Anthropic format)
         try:
             self._track_usage(response.usage.input_tokens, response.usage.output_tokens)
         except (AttributeError, TypeError):
             pass
         return response.content[0].text
+
+    def chat_with_tools(self, messages: list[dict], tools: list[dict] = None,
+                        **kwargs) -> dict:
+        try:
+            import anthropic
+        except ImportError:
+            return {"text": self.chat(messages, **kwargs), "tool_calls": []}
+
+        client = anthropic.Anthropic(api_key=self.api_key)
+        system = ""
+        chat_msgs = []
+        for m in messages:
+            if m["role"] == "system":
+                system = m["content"]
+            else:
+                chat_msgs.append(m)
+
+        params = {
+            "model": self.model,
+            "max_tokens": kwargs.get("max_tokens", 4096),
+            "messages": chat_msgs,
+        }
+        if system:
+            params["system"] = system
+        if tools:
+            params["tools"] = tools
+
+        response = client.messages.create(**params)
+        try:
+            self._track_usage(response.usage.input_tokens, response.usage.output_tokens)
+        except (AttributeError, TypeError):
+            pass
+
+        text_parts = []
+        tool_calls = []
+        for block in response.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+            elif block.type == "tool_use":
+                tool_calls.append({"name": block.name, "args": block.input, "id": block.id})
+        return {"text": "\n".join(text_parts), "tool_calls": tool_calls, "stop_reason": response.stop_reason}
 
     def _chat_via_cli(self, messages: list[dict]) -> str:
         """Fallback: use claude CLI for persistent session."""
@@ -188,6 +254,7 @@ class ClaudeProvider(BaseProvider):
 class OpenAIProvider(BaseProvider):
     LABEL = "GPT (OpenAI)"
     NEEDS_API_KEY = True
+    SUPPORTS_TOOLS = True
     DEFAULT_MODEL = "gpt-4o"
     MODEL_HELP = "e.g. gpt-4o, gpt-4o-mini, o3-mini"
 
@@ -202,7 +269,6 @@ class OpenAIProvider(BaseProvider):
             messages=messages,
             timeout=self.timeout,
         )
-        # Track token usage (OpenAI format)
         try:
             usage = response.usage
             if usage:
@@ -211,6 +277,30 @@ class OpenAIProvider(BaseProvider):
             pass
         return response.choices[0].message.content
 
+    def chat_with_tools(self, messages: list[dict], tools: list[dict] = None,
+                        **kwargs) -> dict:
+        import openai
+        client = openai.OpenAI(api_key=self.api_key)
+        params = {"model": self.model, "messages": messages, "timeout": self.timeout}
+        if tools:
+            params["tools"] = tools
+        response = client.chat.completions.create(**params)
+        try:
+            if response.usage:
+                self._track_usage(response.usage.prompt_tokens, response.usage.completion_tokens)
+        except (AttributeError, TypeError):
+            pass
+        msg = response.choices[0].message
+        tool_calls = []
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments)
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                tool_calls.append({"name": tc.function.name, "args": args, "id": tc.id})
+        return {"text": msg.content or "", "tool_calls": tool_calls}
+
 
 # ── Gemini ─────────────────────────────────────────────────────
 
@@ -218,17 +308,17 @@ class OpenAIProvider(BaseProvider):
 class GeminiProvider(BaseProvider):
     LABEL = "Gemini (Google)"
     NEEDS_API_KEY = True
+    SUPPORTS_TOOLS = True
     DEFAULT_MODEL = "gemini-2.0-flash"
     MODEL_HELP = "e.g. gemini-2.0-flash, gemini-2.5-pro"
 
     def chat(self, messages: list[dict], **kwargs) -> str:
         return self._retry(self._do_chat, messages, **kwargs)
 
-    def _do_chat(self, messages: list[dict], **kwargs) -> str:
+    def _prep_gemini(self, messages):
+        """Prepare messages for Gemini API."""
         import google.generativeai as genai
         genai.configure(api_key=self.api_key)
-
-        # Extract system prompt for system_instruction
         system_text = ""
         contents = []
         for m in messages:
@@ -237,24 +327,48 @@ class GeminiProvider(BaseProvider):
             else:
                 role = "user" if m["role"] == "user" else "model"
                 contents.append({"role": role, "parts": [m["content"]]})
+        return genai, system_text, contents
 
+    def _do_chat(self, messages: list[dict], **kwargs) -> str:
+        genai, system_text, contents = self._prep_gemini(messages)
         model_kwargs = {}
         if system_text.strip():
             model_kwargs["system_instruction"] = system_text.strip()
-
         model = genai.GenerativeModel(self.model, **model_kwargs)
         response = model.generate_content(contents)
-        # Track token usage (Gemini format)
         try:
             meta = response.usage_metadata
             if meta:
-                self._track_usage(
-                    meta.prompt_token_count or 0,
-                    meta.candidates_token_count or 0,
-                )
+                self._track_usage(meta.prompt_token_count or 0, meta.candidates_token_count or 0)
         except (AttributeError, TypeError):
             pass
         return response.text
+
+    def chat_with_tools(self, messages: list[dict], tools: list[dict] = None,
+                        **kwargs) -> dict:
+        genai, system_text, contents = self._prep_gemini(messages)
+        model_kwargs = {}
+        if system_text.strip():
+            model_kwargs["system_instruction"] = system_text.strip()
+        if tools:
+            model_kwargs["tools"] = tools
+        model = genai.GenerativeModel(self.model, **model_kwargs)
+        response = model.generate_content(contents)
+        try:
+            meta = response.usage_metadata
+            if meta:
+                self._track_usage(meta.prompt_token_count or 0, meta.candidates_token_count or 0)
+        except (AttributeError, TypeError):
+            pass
+        text_parts = []
+        tool_calls = []
+        for part in response.candidates[0].content.parts:
+            if hasattr(part, "function_call") and part.function_call.name:
+                fc = part.function_call
+                tool_calls.append({"name": fc.name, "args": dict(fc.args) if fc.args else {}})
+            elif hasattr(part, "text") and part.text:
+                text_parts.append(part.text)
+        return {"text": "\n".join(text_parts), "tool_calls": tool_calls}
 
 
 # ── Ollama ─────────────────────────────────────────────────────

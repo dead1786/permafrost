@@ -37,6 +37,67 @@ def register_tool(name: str, description: str, parameters: dict):
     return decorator
 
 
+def get_tools_schema(provider_type: str = "openai") -> list[dict]:
+    """Convert PF tools to native API function calling schema.
+
+    Args:
+        provider_type: "openai" (GPT/OpenRouter), "claude" (Anthropic), "gemini" (Google)
+
+    Returns list of tool definitions in the provider's native schema.
+    """
+    schemas = []
+
+    for name, info in TOOLS.items():
+        # Build JSON Schema properties from our simple parameter format
+        properties = {}
+        required = []
+        for param_name, param_info in info["parameters"].items():
+            prop = {"type": param_info.get("type", "string")}
+            if "description" in param_info:
+                prop["description"] = param_info["description"]
+            properties[param_name] = prop
+            if param_info.get("required", False):
+                required.append(param_name)
+
+        if provider_type == "openai":
+            schemas.append({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": info["description"],
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required,
+                    },
+                },
+            })
+        elif provider_type == "claude":
+            schemas.append({
+                "name": name,
+                "description": info["description"],
+                "input_schema": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                },
+            })
+        elif provider_type == "gemini":
+            schemas.append({
+                "function_declarations": [{
+                    "name": name,
+                    "description": info["description"],
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required,
+                    },
+                }]
+            })
+
+    return schemas
+
+
 # ── Built-in Tools ────────────────────────────────────────────
 
 @register_tool(

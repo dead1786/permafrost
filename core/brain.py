@@ -27,7 +27,7 @@ from pathlib import Path
 
 from .hooks import HookManager
 from .providers import create_provider, BaseProvider
-from .tools import execute_tool, get_tool_prompt, parse_tool_calls, strip_tool_calls, has_tool_calls, normalize_tool_calls
+from .tools import execute_tool, get_tool_prompt, get_tools_schema, parse_tool_calls, strip_tool_calls, has_tool_calls, normalize_tool_calls
 from .compactor import PFCompactor
 from .agents import PFAgentManager, agent_memory_maintenance, agent_context_extractor, agent_health_check
 from .plugins import PFPluginManager
@@ -437,71 +437,111 @@ class PFBrain:
         if hook_result.system_message:
             msgs.insert(-1, {"role": "system", "content": hook_result.system_message})
 
-        try:
-            response = self.provider.chat(msgs)
-        except Exception as e:
-            log.error(f"AI provider error: {e}")
-            self.hooks.emit("on_error", {"error": str(e), "channel": channel})
-            response = f"[error] AI provider failed: {e}"
+        # ── Determine tool calling mode ─────────────────────────────
+        use_native_tools = (tools_enabled and
+                           hasattr(self.provider, 'SUPPORTS_TOOLS') and
+                           self.provider.SUPPORTS_TOOLS)
 
-        # Normalize tool call format (fixes Gemini TOOL_CODE, GPT backtick, etc.)
-        if tools_enabled:
-            response = normalize_tool_calls(response)
-
-        # ── Tool use loop ──────────────────────────────────────────
-        if tools_enabled and has_tool_calls(response):
+        if use_native_tools:
+            # ── Native function calling (Claude/GPT/Gemini) ──────
+            provider_type = self.config.get("ai_provider", "openai")
+            tool_schemas = get_tools_schema(provider_type)
+            response = ""
             round_count = 0
-            while round_count < max_rounds:
-                tool_calls = parse_tool_calls(response)
-                if not tool_calls:
-                    break
 
+            try:
+                result = self.provider.chat_with_tools(msgs, tools=tool_schemas)
+            except Exception as e:
+                log.error(f"AI provider error: {e}")
+                self.hooks.emit("on_error", {"error": str(e), "channel": channel})
+                result = {"text": f"[error] AI provider failed: {e}", "tool_calls": []}
+
+            response = result.get("text", "")
+            pending_calls = result.get("tool_calls", [])
+
+            while pending_calls and round_count < max_rounds:
                 round_count += 1
-                log.info(f"Tool round {round_count}/{max_rounds}: "
-                         f"{len(tool_calls)} call(s)")
+                log.info(f"Native tool round {round_count}/{max_rounds}: "
+                         f"{len(pending_calls)} call(s)")
 
-                # Execute each tool call and collect results
-                tool_results = []
-                for tc in tool_calls:
+                for tc in pending_calls:
                     tool_name = tc["name"]
-                    tool_args = tc["args"]
+                    tool_args = tc.get("args", {})
                     log.info(f"  -> {tool_name}({json.dumps(tool_args, ensure_ascii=False)[:100]})")
-                    result = execute_tool(tool_name, tool_args, security=self._security)
-                    tool_results.append({
-                        "tool": tool_name,
-                        "args": tool_args,
-                        "result": result,
-                    })
-                    log.info(f"  <- {result[:100]}")
+                    tool_result = execute_tool(tool_name, tool_args, security=self._security)
+                    log.info(f"  <- {tool_result[:100]}")
 
-                # Build tool results message
-                results_text = "\n".join(
-                    f"[TOOL_RESULT tool={tr['tool']}]\n{tr['result']}\n[/TOOL_RESULT]"
-                    for tr in tool_results
-                )
+                    # Append tool call + result to conversation for next round
+                    msgs.append({"role": "assistant", "content": response or f"Calling {tool_name}..."})
+                    msgs.append({"role": "user", "content": f"[Tool result from {tool_name}]: {tool_result}"})
 
-                # Append AI response + tool results for next round
-                msgs.append({"role": "assistant", "content": response})
-                msgs.append({"role": "user", "content": results_text})
-
-                # Call AI again with tool results
+                # Call AI again with results
                 try:
-                    response = self.provider.chat(msgs)
-                    response = normalize_tool_calls(response)
+                    result = self.provider.chat_with_tools(msgs, tools=tool_schemas)
                 except Exception as e:
                     log.error(f"AI provider error (tool round {round_count}): {e}")
-                    response = f"[error] AI provider failed during tool use: {e}"
+                    response = f"[error] AI failed during tool use: {e}"
                     break
 
-                # If no more tool calls, we're done
-                if not has_tool_calls(response):
-                    break
+                response = result.get("text", "")
+                pending_calls = result.get("tool_calls", [])
 
-            if round_count >= max_rounds and has_tool_calls(response):
-                log.warning(f"Tool use hit max rounds ({max_rounds})")
+            if round_count >= max_rounds and pending_calls:
+                log.warning(f"Native tool use hit max rounds ({max_rounds})")
 
-        # Strip tool call blocks from final response
-        final_response = strip_tool_calls(response) if tools_enabled else response
+            final_response = response
+
+        else:
+            # ── Fallback: prompt injection (Ollama/Echo/etc.) ────
+            try:
+                response = self.provider.chat(msgs)
+            except Exception as e:
+                log.error(f"AI provider error: {e}")
+                self.hooks.emit("on_error", {"error": str(e), "channel": channel})
+                response = f"[error] AI provider failed: {e}"
+
+            if tools_enabled:
+                response = normalize_tool_calls(response)
+
+            if tools_enabled and has_tool_calls(response):
+                round_count = 0
+                while round_count < max_rounds:
+                    tool_calls_parsed = parse_tool_calls(response)
+                    if not tool_calls_parsed:
+                        break
+
+                    round_count += 1
+                    log.info(f"Fallback tool round {round_count}/{max_rounds}: "
+                             f"{len(tool_calls_parsed)} call(s)")
+
+                    tool_results = []
+                    for tc in tool_calls_parsed:
+                        tool_name = tc["name"]
+                        tool_args = tc["args"]
+                        log.info(f"  -> {tool_name}({json.dumps(tool_args, ensure_ascii=False)[:100]})")
+                        result = execute_tool(tool_name, tool_args, security=self._security)
+                        tool_results.append({"tool": tool_name, "args": tool_args, "result": result})
+                        log.info(f"  <- {result[:100]}")
+
+                    results_text = "\n".join(
+                        f"[TOOL_RESULT tool={tr['tool']}]\n{tr['result']}\n[/TOOL_RESULT]"
+                        for tr in tool_results
+                    )
+                    msgs.append({"role": "assistant", "content": response})
+                    msgs.append({"role": "user", "content": results_text})
+
+                    try:
+                        response = self.provider.chat(msgs)
+                        response = normalize_tool_calls(response)
+                    except Exception as e:
+                        log.error(f"AI provider error (fallback round {round_count}): {e}")
+                        response = f"[error] AI failed during tool use: {e}"
+                        break
+
+                    if not has_tool_calls(response):
+                        break
+
+            final_response = strip_tool_calls(response) if tools_enabled else response
 
         # Update conversation history (store clean response, not raw tool calls)
         self._conversation.append({"role": "user", "content": text})
