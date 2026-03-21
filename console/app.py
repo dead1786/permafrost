@@ -321,7 +321,9 @@ def render_setup():
             if not final_prompt and persona_answers.get("name"):
                 final_prompt = build_system_prompt(persona_answers)
 
-            new_config = {
+            # Merge with existing config (preserve fields not shown in form)
+            new_config = load_config()
+            new_config.update({
                 "ai_provider": provider,
                 "api_key": api_key,
                 "ai_model": ai_model,
@@ -331,12 +333,21 @@ def render_setup():
                 "night_start": night_start,
                 "night_end": night_end,
                 "configured_at": datetime.now().isoformat(),
-            }
+            })
             # Save persona answers for re-editing
             for q_id, ans in persona_answers.items():
                 new_config[f"persona_{q_id}"] = ans
-            new_config.update(channel_configs)
+            # Only update channel configs that have actual values (don't overwrite with empty)
+            for k, v in channel_configs.items():
+                if v or k.endswith("_enabled"):
+                    new_config[k] = v
             save_config(new_config)
+            # Write reload trigger so brain picks up new config without restart
+            try:
+                reload_file = DATA_DIR / "brain-reload.trigger"
+                reload_file.write_text(datetime.now().isoformat())
+            except OSError:
+                pass
             st.success(f"\u2705 {t('config_saved', _lang)}")
             st.balloons()
             st.session_state.page = "chat"

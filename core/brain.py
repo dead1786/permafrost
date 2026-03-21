@@ -59,6 +59,7 @@ class PFBrain:
         self.heartbeat_file = self.data_dir / "brain-heartbeat.json"
         self.state_file = self.data_dir / "brain-state.json"
         self.wake_trigger = self.data_dir / "brain-wake.trigger"
+        self.reload_trigger = self.data_dir / "brain-reload.trigger"
         self.message_log = self.data_dir / "message-log.json"
 
         # Channel inboxes (registered dynamically)
@@ -314,6 +315,31 @@ class PFBrain:
             while self.running:
                 self._write_heartbeat()
                 self.loop_count += 1
+
+                # Check for config reload trigger
+                if self.reload_trigger.exists():
+                    try:
+                        self.reload_trigger.unlink()
+                        log.info("Reload trigger detected — reloading config...")
+                        new_config = {}
+                        config_file = self.data_dir / "config.json"
+                        if config_file.exists():
+                            with open(config_file, "r", encoding="utf-8") as f:
+                                new_config = json.load(f)
+                        self.config.update(new_config)
+                        self._provider = None  # Force re-init provider
+                        # Re-register channels
+                        from channels.base import _CHANNELS
+                        for ch_name, ch_cls in _CHANNELS.items():
+                            key = f"{ch_name}_enabled"
+                            if new_config.get(key) and ch_name not in self.channel_inboxes:
+                                ch_instance = ch_cls(new_config, str(self.data_dir))
+                                inbox_path = str(self.data_dir / f"{ch_name}-inbox.json")
+                                self.register_channel(ch_name, inbox_path, ch_instance.reply_handler)
+                                log.info(f"Channel added: {ch_name}")
+                        log.info(f"Config reloaded. Channels: {list(self.channel_inboxes.keys())}")
+                    except Exception as e:
+                        log.error(f"Config reload failed: {e}")
 
                 inbox_results = self._check_inboxes()
 
