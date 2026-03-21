@@ -1,0 +1,9 @@
+{
+  "name": "example_plugin",
+  "version": "1.0.0",
+  "description": "Example plugin showing how to add custom tools to Permafrost",
+  "author": "Permafrost Team",
+  "entry": "__init__",
+  "requires": [],
+  "config_fields": []
+}

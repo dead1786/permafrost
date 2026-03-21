@@ -30,6 +30,7 @@ from .providers import create_provider, BaseProvider
 from .tools import execute_tool, get_tool_prompt, parse_tool_calls, strip_tool_calls
 from .compactor import PFCompactor
 from .agents import PFAgentManager, agent_memory_maintenance, agent_context_extractor, agent_health_check
+from .plugins import PFPluginManager
 from smart.default_prompt import build_default_prompt
 
 log = logging.getLogger("permafrost.brain")
@@ -586,6 +587,19 @@ class PFBrain:
             "provider": self.config["ai_provider"],
             "channels": list(self.channel_inboxes.keys()),
         })
+
+        # Load plugins
+        try:
+            plugins = PFPluginManager(
+                data_dir=str(self.data_dir),
+                config=self.config,
+            )
+            plugins.load_all()
+            loaded = [p["name"] for p in plugins.list_plugins() if p["loaded"]]
+            if loaded:
+                log.info(f"Plugins loaded: {loaded}")
+        except Exception as e:
+            log.warning(f"Plugin loading failed: {e}")
 
         try:
             while self.running:
