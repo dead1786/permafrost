@@ -358,17 +358,26 @@ def render_chat():
         with st.chat_message(msg["role"], avatar=avatar):
             st.write(msg["content"])
 
-    # Auto-scroll to bottom of chat using components.html (can run JS)
+    # Auto-scroll: inject JS via components.html with retry
     import streamlit.components.v1 as _components
-    _components.html("""
-    <script>
-    const main = window.parent.document.querySelector('section.main');
-    if (main) main.scrollTop = main.scrollHeight;
-    const block = window.parent.document.querySelector('[data-testid="stVerticalBlock"]');
-    if (block) block.scrollTop = block.scrollHeight;
-    window.parent.scrollTo(0, window.parent.document.body.scrollHeight);
-    </script>
-    """, height=0)
+    if st.session_state.messages:
+        _components.html("""
+        <script>
+        function scrollToBottom() {
+            try {
+                var d = window.parent.document;
+                var els = d.querySelectorAll('[data-testid="stChatMessage"]');
+                if (els.length > 0) {
+                    els[els.length - 1].scrollIntoView({block: 'end'});
+                } else {
+                    d.querySelector('section.main').scrollTop = 999999;
+                }
+            } catch(e) {}
+        }
+        setTimeout(scrollToBottom, 100);
+        setTimeout(scrollToBottom, 500);
+        </script>
+        """, height=0)
 
     # Input
     if prompt := st.chat_input(t("type_message", _lang)):
