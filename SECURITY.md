@@ -12,49 +12,62 @@ We will respond within 48 hours and provide a fix timeline.
 
 ## Security Architecture
 
-Permafrost implements 4 layers of defense:
+Permafrost implements 6 layers of defense:
 
 ### Layer 1: Tool Whitelist
-- Only explicitly allowed tools can be executed
+- Only explicitly allowed tools can be executed (64 tools registered)
 - Default: strict mode (minimal tools enabled)
 - Configurable per security profile: `strict` / `standard` / `relaxed` / `off`
+- Blacklist overrides whitelist for extra safety
 
 ### Layer 2: File Access Control (ACL)
 - AI can only read/write files within allowed directories
-- Sensitive paths (`.env`, `secrets/`, system files) are blocked by default
-- Configurable allow/deny lists
+- Sensitive paths (`.env`, `secrets/`, `*.pem`, `*.key`, `credentials*`) blocked by default
+- Configurable allow/deny lists per security level
 
-### Layer 3: Prompt Injection Detection
+### Layer 3: Workspace Boundary Enforcement
+- Prevents sandbox escape via symlinks, `..` traversal, or absolute paths
+- Resolves all paths to their real location before checking
+- Windows-aware (normalizes drive letter case)
+- Throws `ValueError` on any escape attempt
+
+### Layer 4: Prompt Injection Detection
 - 20+ detection patterns for common injection techniques
-- Scans all incoming messages before processing
-- Blocks: role hijacking, instruction override, system prompt extraction, encoding attacks
-- Logs all detected attempts to audit log
+- Blocks: role hijacking, instruction override, system prompt extraction, encoding attacks, DAN mode
+- Configurable action: `block` (default), `warn`, or `log`
+- Custom pattern support via config
 
-### Layer 4: Rate Limiter
-- Configurable requests-per-minute limit
+### Layer 5: Rate Limiter
+- Configurable tools-per-minute and messages-per-minute limits
+- Token-per-hour tracking to prevent runaway costs
 - Prevents abuse and runaway loops
-- Per-channel rate limiting
+
+### Layer 6: Audit Log
+- Every security event logged to `~/.permafrost/audit.jsonl`
+- Structured JSON entries with timestamp, event type, target, details
+- Queryable via `get_recent_audit(n)` API
+
+### Additional Security Features
+
+- **Payload Redaction**: Base64 image data automatically replaced with `<redacted>` in logs (prevents log bloat)
+- **Error Classification**: 9-type `FailoverReason` system classifies provider errors (auth/billing/rate_limit/overloaded/timeout/model_not_found/context_overflow/network/unknown) for intelligent fallback decisions
+- **Dangerous Command Detection**: Regex patterns catch `rm -rf`, `git push --force`, `drop table`, `curl | sh`, etc.
+- **Approval System**: Dangerous operations can require human confirmation via callback
 
 ## Security Profiles
 
 | Profile | Tools | File Access | Injection Detection | Rate Limit |
 |---------|-------|-------------|-------------------|------------|
-| `strict` | Minimal | Read-only, restricted dirs | ON | 10/min |
-| `standard` | Common set | Read/write, project dirs | ON | 30/min |
-| `relaxed` | Most tools | Broad access | ON | 60/min |
+| `strict` | 62 whitelisted | Read-only, restricted dirs | ON (block) | 30/min |
+| `standard` | Common set | Read/write, project dirs | ON (block) | 30/min |
+| `relaxed` | Most tools | Broad access | ON (warn) | 60/min |
 | `off` | All tools | Unrestricted | OFF | None |
-
-## Audit Log
-
-All security events are logged to `~/.permafrost/audit.log`:
-- Tool execution attempts (allowed/denied)
-- File access attempts (allowed/denied)
-- Prompt injection detections
-- Rate limit triggers
 
 ## Best Practices
 
 1. Always start with `strict` profile and relax only as needed
-2. Review audit logs periodically
+2. Review audit logs periodically: `~/.permafrost/audit.jsonl`
 3. Never store API keys in `config.json` — use environment variables
 4. Use Docker secrets for production deployments
+5. Do NOT run Permafrost with administrator/root privileges
+6. Set workspace boundary to restrict file tool access scope
