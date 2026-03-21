@@ -139,7 +139,15 @@ def get_lang() -> str:
 
 def is_configured():
     config = load_config()
-    return bool(config.get("ai_provider") and config.get("api_key"))
+    provider = config.get("ai_provider", "")
+    if not provider:
+        return False
+    # Providers that don't need API keys are configured with just the provider name
+    no_key_providers = {"ollama", "claude-cli", "custom", "qwen", "copilot",
+                        "openai-codex", "minimax", "chutes", "echo"}
+    if provider in no_key_providers:
+        return True
+    return bool(config.get("api_key"))
 
 
 # ── Global language ──
