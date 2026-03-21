@@ -69,6 +69,27 @@ header[data-testid="stHeader"] { display: none !important; }
 }
 .brand { font-size: 2.5em; font-weight: bold; }
 .tagline { color: #888; font-size: 1.1em; margin-bottom: 2rem; }
+/* No flash/transition on rerun */
+.stApp, .main, section[data-testid="stMain"],
+[data-testid="stVerticalBlock"], [data-testid="stChatMessage"] {
+    transition: none !important;
+    animation: none !important;
+}
+/* Fixed chat input at bottom */
+div[data-testid="stChatInput"] {
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    z-index: 9998 !important;
+    background: #0e1117 !important;
+    padding: 0.5rem 2rem !important;
+    border-top: 1px solid #333 !important;
+}
+/* Add padding at bottom so last message isn't hidden behind fixed input */
+section[data-testid="stMain"] > div {
+    padding-bottom: 5rem !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -186,37 +207,33 @@ def render_setup():
     channels_info = list_channels()
     channel_configs = {}
 
-    # Channel checkboxes in a row
-    ch_cols = st.columns(len(channels_info))
-    ch_enabled = {}
-    for i, ch in enumerate(channels_info):
-        with ch_cols[i]:
-            key_enabled = f"{ch['name']}_enabled"
-            is_web = ch["name"] == "web"
-            ch_enabled[ch["name"]] = st.checkbox(
-                ch["label"], value=config.get(key_enabled, is_web), disabled=is_web)
-            channel_configs[key_enabled] = ch_enabled[ch["name"]]
-
-    # Config fields for enabled channels (outside columns for proper rendering)
     for ch in channels_info:
-        if ch_enabled.get(ch["name"]) and ch["config_fields"]:
-            st.markdown(f"**{ch['label']}**")
-            for field in ch["config_fields"]:
-                field_key = field["name"]
-                if field["type"] == "password":
-                    val = st.text_input(field["label"], value=config.get(field_key, ""),
-                                        type="password", help=field.get("help", ""),
-                                        key=field_key)
-                elif field["type"] == "select":
-                    options = field.get("options", [""])
-                    curr_val = config.get(field_key, "")
-                    idx = options.index(curr_val) if curr_val in options else 0
-                    val = st.selectbox(field["label"], options, index=idx,
-                                       help=field.get("help", ""), key=field_key)
-                else:
-                    val = st.text_input(field["label"], value=str(config.get(field_key, "")),
-                                        help=field.get("help", ""), key=field_key)
-                channel_configs[field_key] = val
+        key_enabled = f"{ch['name']}_enabled"
+        is_web = ch["name"] == "web"
+
+        with st.expander(f"{'🟢' if config.get(key_enabled, is_web) else '⚪'} {ch['label']}", expanded=config.get(key_enabled, is_web)):
+            enabled = st.checkbox(
+                f"Enable {ch['label']}", value=config.get(key_enabled, is_web),
+                disabled=is_web, key=key_enabled)
+            channel_configs[key_enabled] = enabled
+
+            if ch["config_fields"]:
+                for field in ch["config_fields"]:
+                    field_key = field["name"]
+                    if field["type"] == "password":
+                        val = st.text_input(field["label"], value=config.get(field_key, ""),
+                                            type="password", help=field.get("help", ""),
+                                            key=field_key)
+                    elif field["type"] == "select":
+                        options = field.get("options", [""])
+                        curr_val = config.get(field_key, "")
+                        idx = options.index(curr_val) if curr_val in options else 0
+                        val = st.selectbox(field["label"], options, index=idx,
+                                           help=field.get("help", ""), key=field_key)
+                    else:
+                        val = st.text_input(field["label"], value=str(config.get(field_key, "")),
+                                            help=field.get("help", ""), key=field_key)
+                    channel_configs[field_key] = val
 
     # ── Step 3: AI Persona ──
     st.markdown(f"### {t('step3_persona', _lang)}")
