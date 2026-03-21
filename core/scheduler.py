@@ -7,6 +7,7 @@ Features:
   - Ack system: tasks marked .pending -> .ack when completed
   - Fail tracking: fail_count per task for watchdog alerting
   - Heartbeat: periodic health check for watchdog
+  - Notify: push messages to channel inboxes (with night silence support)
 """
 
 import json
@@ -17,6 +18,18 @@ from datetime import datetime
 from pathlib import Path
 
 log = logging.getLogger("permafrost.scheduler")
+
+
+def _safe_read_json(path: Path, default=None):
+    """Read JSON file safely. Returns default on any error."""
+    if default is None:
+        default = []
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return default
 
 
 class PFScheduler:
@@ -251,14 +264,204 @@ class PFScheduler:
         self._update_state(task_id, True, state)
         self._save_state(state)
 
+    # ── Reminders ──
+
+    def _load_reminders(self) -> list:
+        """Load user-defined reminders from reminders.json."""
+        reminder_file = self.data_dir / "reminders.json"
+        reminders = _safe_read_json(reminder_file)
+        if not isinstance(reminders, list):
+            return []
+        return [r for r in reminders if isinstance(r, dict) and r.get("enabled", True)]
+
+    def _check_reminders(self, state: dict):
+        """Check and fire user reminders that match current time."""
+        reminders = self._load_reminders()
+        now = datetime.now()
+        now_hm = now.strftime("%H:%M")
+
+        reminder_file = self.data_dir / "reminders.json"
+        all_reminders = _safe_read_json(reminder_file)
+        if not isinstance(all_reminders, list):
+            all_reminders = []
+
+        changed = False
+        to_remove = []
+
+        for rem in reminders:
+            rid = rem.get("id", "")
+            if rem.get("time") != now_hm:
+                continue
+
+            # Check if already fired this minute
+            rem_state = state.get("tasks", {}).get(rid, {})
+            last_run = rem_state.get("last_run", "")
+            if last_run:
+                lr = datetime.fromisoformat(last_run)
+                if lr.strftime("%Y-%m-%d %H:%M") == now.strftime("%Y-%m-%d %H:%M"):
+                    continue
+
+            # Check day-of-week for weekly (fire only on same weekday as created)
+            repeat = rem.get("repeat", "once")
+            if repeat == "weekly":
+                created = rem.get("created", "")
+                if created:
+                    created_dt = datetime.fromisoformat(created)
+                    if now.weekday() != created_dt.weekday():
+                        continue
+
+            # Fire the reminder
+            self.notify_user(rem.get("message", "Reminder"))
+            self._update_state(rid, True, state)
+            log.info(f"reminder fired: {rid}")
+
+            # Remove one-shot reminders
+            if repeat == "once":
+                to_remove.append(rid)
+                changed = True
+
+        # Clean up fired one-shot reminders
+        if changed:
+            all_reminders = [r for r in all_reminders if r.get("id") not in to_remove]
+            reminder_file.write_text(
+                json.dumps(all_reminders, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+    # ── Config helpers ──
+
+    def _load_config(self) -> dict:
+        """Load permafrost config for channel/night settings."""
+        config_file = self.data_dir / "config.json"
+        if not config_file.exists():
+            return {}
+        try:
+            return json.loads(config_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+    # ── Night silence ──
+
+    def _is_night(self) -> bool:
+        """Check if current time falls within the night silence window."""
+        config = self._load_config()
+        now = datetime.now().strftime("%H:%M")
+        start = config.get("night_start", "00:00")
+        end = config.get("night_end", "08:00")
+        if start < end:
+            return start <= now < end
+        else:  # crosses midnight, e.g. 23:00-07:00
+            return now >= start or now < end
+
+    # ── Notification system ──
+
+    def notify_user(self, message: str, channel: str = "all"):
+        """Send a message to user through enabled channels.
+
+        During night silence hours, messages are queued instead
+        and flushed when silence ends.
+        """
+        if self._is_night():
+            self._queue_notification(message)
+            log.info(f"notification queued (night silence): {message[:60]}")
+            return
+
+        config = self._load_config()
+        channels_to_notify = []
+
+        if channel == "all":
+            for ch_name in ["web", "telegram", "discord", "line"]:
+                if config.get(f"{ch_name}_enabled", ch_name == "web"):
+                    channels_to_notify.append(ch_name)
+        else:
+            channels_to_notify = [channel]
+
+        for ch in channels_to_notify:
+            inbox_file = self.data_dir / f"{ch}-inbox.json"
+            try:
+                inbox = _safe_read_json(inbox_file)
+                if not isinstance(inbox, list):
+                    inbox = []
+                inbox.append({
+                    "text": message,
+                    "source": "scheduler",
+                    "timestamp": datetime.now().isoformat(),
+                    "read": False,
+                })
+                inbox_file.write_text(
+                    json.dumps(inbox, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception as e:
+                log.error(f"notify failed for {ch}: {e}")
+
+        log.info(f"notified {channels_to_notify}: {message[:60]}")
+
+    def _queue_notification(self, message: str):
+        """Queue a notification for delivery after night silence ends."""
+        queue_file = self.data_dir / "notify-queue.json"
+        queue = _safe_read_json(queue_file)
+        if not isinstance(queue, list):
+            queue = []
+        queue.append({
+            "text": message,
+            "timestamp": datetime.now().isoformat(),
+        })
+        queue_file.write_text(
+            json.dumps(queue, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def _flush_notification_queue(self):
+        """Flush all queued night-silence notifications."""
+        queue_file = self.data_dir / "notify-queue.json"
+        queue = _safe_read_json(queue_file)
+        if not isinstance(queue, list) or not queue:
+            return
+        log.info(f"flushing {len(queue)} queued notification(s)")
+        for item in queue:
+            # Send directly (bypass night check since we're flushing)
+            config = self._load_config()
+            channels_to_notify = []
+            for ch_name in ["web", "telegram", "discord", "line"]:
+                if config.get(f"{ch_name}_enabled", ch_name == "web"):
+                    channels_to_notify.append(ch_name)
+            for ch in channels_to_notify:
+                inbox_file = self.data_dir / f"{ch}-inbox.json"
+                try:
+                    inbox = _safe_read_json(inbox_file)
+                    if not isinstance(inbox, list):
+                        inbox = []
+                    inbox.append({
+                        "text": item["text"],
+                        "source": "scheduler",
+                        "timestamp": datetime.now().isoformat(),
+                        "read": False,
+                    })
+                    inbox_file.write_text(
+                        json.dumps(inbox, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                except Exception as e:
+                    log.error(f"flush notify failed for {ch}: {e}")
+        # Clear queue
+        queue_file.write_text("[]", encoding="utf-8")
+
     def run(self):
         """Main scheduler loop."""
         self.running = True
         log.info(f"started (PID {os.getpid()})")
+        was_night = self._is_night()
 
         try:
             while self.running:
                 self._write_heartbeat()
+
+                # Detect night->day transition and flush queued notifications
+                is_night_now = self._is_night()
+                if was_night and not is_night_now:
+                    self._flush_notification_queue()
+                was_night = is_night_now
 
                 schedule = self._load_schedule()
                 state = self._load_state()
@@ -271,6 +474,12 @@ class PFScheduler:
                     if self._should_run(task, state):
                         self._enqueue(task)
                         self._update_state(task["id"], True, state)
+                        # Notify user about the triggered task
+                        desc = task.get("description", task.get("id", "task"))
+                        self.notify_user(f"[Scheduler] {desc}")
+
+                # Check user-defined reminders
+                self._check_reminders(state)
 
                 self._save_state(state)
                 time.sleep(self.poll_interval)

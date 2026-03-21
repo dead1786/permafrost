@@ -539,8 +539,68 @@ def render_schedule():
     else:
         st.info(t("no_schedule_file", _lang))
 
+    # ── User Reminders ──
     st.markdown("---")
-    st.markdown(f"*{t('task_mgmt_coming', _lang)}*")
+    st.markdown(f"#### {t('reminders', _lang)}")
+
+    reminder_file = DATA_DIR / "reminders.json"
+    reminders = safe_read_json(reminder_file)
+    if not isinstance(reminders, list):
+        reminders = []
+
+    # Show existing reminders
+    if reminders:
+        to_delete = None
+        for i, rem in enumerate(reminders):
+            if not isinstance(rem, dict) or not rem.get("enabled", True):
+                continue
+            repeat_label = {"once": "Once", "daily": "Daily", "weekly": "Weekly"}.get(
+                rem.get("repeat", "once"), rem.get("repeat", ""))
+            col_info, col_del = st.columns([6, 1])
+            with col_info:
+                st.markdown(
+                    f"\U0001f514 **{rem.get('time', '?')}** {repeat_label} — "
+                    f"{rem.get('message', '')[:80]}"
+                )
+            with col_del:
+                if st.button(t("delete", _lang), key=f"del_reminder_{i}"):
+                    to_delete = i
+        if to_delete is not None:
+            reminders.pop(to_delete)
+            reminder_file.write_text(
+                json.dumps(reminders, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            st.rerun()
+    else:
+        st.caption(t("no_reminders", _lang))
+
+    # Add new reminder form
+    st.markdown(f"#### {t('add_reminder', _lang)}")
+    reminder_time = st.time_input(t("reminder_time", _lang))
+    reminder_msg = st.text_input(t("reminder_message", _lang))
+    reminder_repeat = st.selectbox(
+        t("reminder_repeat", _lang),
+        ["once", "daily", "weekly"],
+        format_func=lambda x: {"once": "Once", "daily": "Daily", "weekly": "Weekly"}[x],
+    )
+    if st.button(f"\U0001f514 {t('add_reminder', _lang)}", type="primary"):
+        if not reminder_msg.strip():
+            st.error(t("reminder_msg_required", _lang))
+        else:
+            reminders.append({
+                "id": f"reminder-{int(time.time())}",
+                "time": reminder_time.strftime("%H:%M"),
+                "message": reminder_msg.strip(),
+                "repeat": reminder_repeat,
+                "enabled": True,
+                "created": datetime.now().isoformat(),
+            })
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            reminder_file.write_text(
+                json.dumps(reminders, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            st.success(t("reminder_added", _lang))
+            st.rerun()
 
 
 # ══════════════════════════════════════════
