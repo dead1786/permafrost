@@ -41,6 +41,7 @@ DEFAULT_TOOL_WHITELIST = {
         "read_file", "search", "list_files", "web_search",
         "python_exec", "memory_save", "memory_note", "memory_search",
         "memory_list", "memory_gc", "memory_reindex", "memory_stats",
+        "set_reminder", "list_reminders", "delete_reminder",
     ],
     "standard": [
         "read_file", "write_file", "edit_file", "search", "list_files",

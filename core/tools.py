@@ -398,6 +398,98 @@ def tool_memory_stats(**kwargs):
     return "Memory Stats:\n" + "\n".join(lines)
 
 
+@register_tool("set_reminder", "Set a timed reminder that will notify the user at the specified time", {
+    "message": {"type": "string", "description": "Reminder message to send"},
+    "time": {"type": "string", "description": "Time in HH:MM format (24h)"},
+    "repeat": {"type": "string", "description": "once (default), daily, or weekly"},
+})
+def tool_set_reminder(message, time, repeat="once", **kwargs):
+    """Create a scheduled reminder. Scheduler will fire it at the specified time."""
+    import uuid
+    from datetime import datetime
+    from pathlib import Path
+
+    data_dir = Path(os.path.expanduser("~/.permafrost"))
+    reminder_file = data_dir / "reminders.json"
+
+    # Validate time format
+    try:
+        datetime.strptime(time, "%H:%M")
+    except ValueError:
+        return f"[error] Invalid time format '{time}'. Use HH:MM (e.g. 22:00)"
+
+    if repeat not in ("once", "daily", "weekly"):
+        repeat = "once"
+
+    # Load existing reminders
+    reminders = []
+    if reminder_file.exists():
+        try:
+            reminders = json.loads(reminder_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            reminders = []
+
+    reminder_id = f"rem-{uuid.uuid4().hex[:8]}"
+    reminders.append({
+        "id": reminder_id,
+        "message": message,
+        "time": time,
+        "repeat": repeat,
+        "enabled": True,
+        "created": datetime.now().isoformat(),
+    })
+
+    reminder_file.write_text(
+        json.dumps(reminders, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return f"Reminder set: '{message}' at {time} ({repeat}). ID: {reminder_id}"
+
+
+@register_tool("list_reminders", "List all active reminders", {})
+def tool_list_reminders(**kwargs):
+    """List all scheduled reminders."""
+    from pathlib import Path
+    data_dir = Path(os.path.expanduser("~/.permafrost"))
+    reminder_file = data_dir / "reminders.json"
+    if not reminder_file.exists():
+        return "No reminders set."
+    try:
+        reminders = json.loads(reminder_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return "No reminders set."
+    if not reminders:
+        return "No reminders set."
+    lines = []
+    for r in reminders:
+        status = "ON" if r.get("enabled", True) else "OFF"
+        lines.append(f"  [{status}] {r.get('time','')} ({r.get('repeat','once')}) — {r.get('message','')}")
+    return f"Reminders ({len(reminders)}):\n" + "\n".join(lines)
+
+
+@register_tool("delete_reminder", "Delete a reminder by ID", {
+    "reminder_id": {"type": "string", "description": "Reminder ID to delete"},
+})
+def tool_delete_reminder(reminder_id, **kwargs):
+    """Delete a scheduled reminder."""
+    from pathlib import Path
+    data_dir = Path(os.path.expanduser("~/.permafrost"))
+    reminder_file = data_dir / "reminders.json"
+    if not reminder_file.exists():
+        return "No reminders found."
+    try:
+        reminders = json.loads(reminder_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return "No reminders found."
+    before = len(reminders)
+    reminders = [r for r in reminders if r.get("id") != reminder_id]
+    if len(reminders) == before:
+        return f"Reminder '{reminder_id}' not found."
+    reminder_file.write_text(
+        json.dumps(reminders, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return f"Reminder '{reminder_id}' deleted."
+
+
 # ── Tool Executor ─────────────────────────────────────────────
 
 def execute_tool(name: str, args: dict, security=None) -> str:
