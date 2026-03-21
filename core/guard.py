@@ -35,13 +35,17 @@ class PFContextGuard:
         self.last_trigger = 0
 
     def _get_context_level(self) -> float:
-        """Read current context usage percentage."""
+        """Read current context usage percentage.
+
+        Reads from context-level.json which is written by PFBrain
+        every time conversation changes.
+        """
         if not self.context_file.exists():
             return 0.0
         try:
             with open(self.context_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return float(data.get("percentage", data.get("level", 0.0)))
+            return float(data.get("percent", data.get("percentage", data.get("level", 0.0))))
         except (json.JSONDecodeError, OSError, ValueError):
             return 0.0
 

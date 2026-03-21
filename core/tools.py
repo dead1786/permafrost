@@ -210,6 +210,13 @@ def tool_memory_save(name, content, type="reference", **kwargs):
     try:
         mem = PFMemory()
         mem.save_l2(name, name, type, content)
+        # Auto-index to vector store for semantic search
+        try:
+            from smart.vector import PFVectorSearch
+            vs = PFVectorSearch(str(mem.data_dir))
+            vs.index_memory(f"L2:{name}", f"{name} {content}", {"layer": "L2", "type": type})
+        except Exception:
+            pass  # Vector indexing is optional
         return f"[L2] Saved: {name} ({type})"
     except Exception as e:
         return f"[error] {e}"
@@ -226,27 +233,50 @@ def tool_memory_note(key, value, type="context", **kwargs):
         mem = PFMemory()
         importance = int(kwargs.get("importance", 3))
         mem.add_l3(key, value, type, importance)
+        # Auto-index to vector store
+        try:
+            from smart.vector import PFVectorSearch
+            vs = PFVectorSearch(str(mem.data_dir))
+            vs.index_memory(f"L3:{key}", f"{key} {value}", {"layer": "L3", "type": type})
+        except Exception:
+            pass
         return f"[L3] Noted: {key} ({type})"
     except Exception as e:
         return f"[error] {e}"
 
 
-@register_tool("memory_search", "Search across all memory layers (L2 + L3)", {
-    "query": {"type": "string", "description": "Search keywords"},
+@register_tool("memory_search", "Search across all memory layers (L2 + L3) with semantic vector search", {
+    "query": {"type": "string", "description": "Search query (supports natural language semantic search)"},
 })
 def tool_memory_search(query, **kwargs):
     from smart.memory import PFMemory
     mem = PFMemory()
-    results = mem.search_all(query)
+
+    # Try semantic search first, fallback to keyword
+    results = mem.search_semantic(query, top_k=10)
+    if not results:
+        results = mem.search_all(query)
+
     if not results:
         return "No memories found."
+
     lines = []
     for r in results[:10]:
-        layer = r.get("layer", "?")
+        # Handle both semantic and keyword result formats
+        layer = r.get("layer", r.get("metadata", {}).get("layer", "?"))
+        score = r.get("score", "")
+        score_str = f" (score:{score:.2f})" if isinstance(score, float) else ""
+
         if layer == "L2":
-            lines.append(f"[L2:{r.get('type','')}] {r.get('name','')}: {r.get('body','')[:200]}")
+            name = r.get("name", r.get("text", "")[:50])
+            body = r.get("body", r.get("text", ""))[:200]
+            lines.append(f"[L2:{r.get('type', r.get('metadata', {}).get('type', ''))}]{score_str} {name}: {body}")
+        elif layer == "L3":
+            key = r.get("key", "")
+            value = r.get("value", r.get("text", ""))[:200]
+            lines.append(f"[L3:{r.get('type', r.get('metadata', {}).get('type', ''))}]{score_str} {key}: {value}")
         else:
-            lines.append(f"[L3:{r.get('type','')}] {r.get('key','')}: {r.get('value','')[:200]}")
+            lines.append(f"[{layer}]{score_str} {r.get('text', '')[:200]}")
     return "\n".join(lines)
 
 
@@ -285,7 +315,20 @@ def tool_memory_gc(**kwargs):
         return f"[error] {e}"
 
 
-@register_tool("memory_stats", "Show memory layer statistics (L1-L6)", {})
+@register_tool("memory_reindex", "Rebuild vector search index from all L2+L3 memories", {})
+def tool_memory_reindex(**kwargs):
+    from smart.memory import PFMemory
+    try:
+        mem = PFMemory()
+        mem.index_all_memories()
+        stats = mem.get_stats()
+        vectors = stats.get("vectors", 0)
+        return f"Vector index rebuilt: {vectors} entries indexed (L2+L3)"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("memory_stats", "Show memory layer statistics (L1-L6 + vector index)", {})
 def tool_memory_stats(**kwargs):
     from smart.memory import PFMemory
     mem = PFMemory()

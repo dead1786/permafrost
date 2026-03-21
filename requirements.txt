@@ -14,3 +14,6 @@ google-generativeai>=0.8.0
 
 # LINE webhook tunnel (cloudflare = zero config, ngrok = needs account)
 pycloudflared>=0.2.0
+
+# Vector search (local embedding for semantic memory retrieval)
+sentence-transformers>=2.2.0

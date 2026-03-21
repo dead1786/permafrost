@@ -401,16 +401,82 @@ class PFMemory:
                 results.append({"year": f.stem, "total_entries": 0, "filename": f.name})
         return results
 
+    # ── Vector Search Integration ────────────────────────────────
+
+    def _get_vector_search(self, config: dict = None):
+        """Lazy-init vector search engine."""
+        if not hasattr(self, "_vector_search"):
+            try:
+                from smart.vector import PFVectorSearch
+                self._vector_search = PFVectorSearch(str(self.data_dir), config or {})
+            except Exception as e:
+                log.warning(f"Vector search init failed: {e}")
+                self._vector_search = None
+        return self._vector_search
+
+    def search_semantic(self, query: str, top_k: int = 5, config: dict = None) -> list:
+        """Semantic search across all indexed memories using vector similarity.
+
+        Falls back to keyword search if vector search is unavailable.
+        """
+        vs = self._get_vector_search(config)
+        if vs is None:
+            return self.search_all(query)
+        try:
+            results = vs.search(query, top_k=top_k)
+            return results
+        except Exception as e:
+            log.warning(f"Vector search failed, falling back to keyword: {e}")
+            return self.search_all(query)
+
+    def index_all_memories(self, config: dict = None):
+        """Build/rebuild the vector index from all L2 + L3 memories."""
+        vs = self._get_vector_search(config)
+        if vs is None:
+            log.warning("Vector search not available, skipping index build")
+            return
+
+        entries = []
+
+        # Index L2 memories
+        for f in (self.memory_dir / "L2").glob("*.md"):
+            meta = self.load_l2(f.name)
+            text = f"{meta.get('name', '')} {meta.get('description', '')} {meta.get('body', '')}"
+            entries.append({
+                "id": f"L2:{f.name}",
+                "text": text,
+                "metadata": {"layer": "L2", "type": meta.get("type", ""), "filename": f.name},
+                "created_at": meta.get("updated", datetime.now().isoformat()),
+            })
+
+        # Index L3 memories
+        for e in self._load_l3():
+            entries.append({
+                "id": f"L3:{e.get('key', '')}",
+                "text": f"{e.get('key', '')} {e.get('value', '')}",
+                "metadata": {"layer": "L3", "type": e.get("type", ""), "importance": e.get("importance", 3)},
+                "created_at": e.get("created", datetime.now().isoformat()),
+            })
+
+        if entries:
+            vs.rebuild_index(entries)
+            log.info(f"Vector index built: {len(entries)} entries (L2+L3)")
+
     # ── Context for AI ──────────────────────────────────────────
 
-    def get_context_block(self) -> str:
+    def get_context_block(self, query: str = "", config: dict = None) -> str:
         """Get compact memory context for AI prompt injection.
 
-        Includes L2 feedback/user memories and top L3 dynamic entries.
+        If query is provided and vector search is available, includes
+        semantically relevant memories in addition to core memories.
+
+        Args:
+            query: Current user message for semantic search (optional)
+            config: Vector search config (optional)
         """
         blocks = []
 
-        # L2: feedback and user memories (always include)
+        # L2: feedback and user memories (always include — these are core)
         for mem_type in ["feedback", "user"]:
             items = self.list_l2(mem_type)
             for i in items:
@@ -421,12 +487,28 @@ class PFMemory:
         for e in l3:
             blocks.append(f"[L3:{e.get('type', '')}] {e['key']}: {e['value'][:150]}")
 
+        # Vector search: inject semantically relevant memories for current query
+        if query:
+            vs = self._get_vector_search(config)
+            if vs and vs.store.count() > 0:
+                try:
+                    relevant = vs.search(query, top_k=3, use_mmr=True)
+                    seen_ids = set()
+                    for r in relevant:
+                        rid = r.get("id", "")
+                        if rid not in seen_ids and r.get("score", 0) > 0.3:
+                            seen_ids.add(rid)
+                            layer = r.get("metadata", {}).get("layer", "?")
+                            blocks.append(f"[relevant:{layer}] {r['text'][:200]}")
+                except Exception as e:
+                    log.debug(f"Context vector search skipped: {e}")
+
         return "\n".join(blocks)
 
     # ── Search All Layers ───────────────────────────────────────
 
     def search_all(self, query: str) -> list:
-        """Search across L2 and L3."""
+        """Search across L2 and L3 (keyword-based)."""
         results = []
         for r in self.search_l2(query):
             r["layer"] = "L2"
@@ -440,7 +522,7 @@ class PFMemory:
 
     def get_stats(self) -> dict:
         """Get entry counts for all memory layers."""
-        return {
+        stats = {
             "L1": len(list((self.memory_dir / "L1").glob("*.md"))),
             "L2": len(list((self.memory_dir / "L2").glob("*.md"))),
             "L3": len(self._load_l3()),
@@ -448,6 +530,11 @@ class PFMemory:
             "L5": len(list((self.memory_dir / "L5").glob("*.json"))),
             "L6": len(list((self.memory_dir / "L6").glob("*.json"))),
         }
+        # Add vector stats if available
+        vs = self._get_vector_search() if hasattr(self, "_vector_search") else None
+        if vs:
+            stats["vectors"] = vs.store.count()
+        return stats
 
     # ── Backward Compatibility ──────────────────────────────────
 

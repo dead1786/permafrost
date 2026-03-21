@@ -28,6 +28,8 @@ from pathlib import Path
 from .hooks import HookManager
 from .providers import create_provider, BaseProvider
 from .tools import execute_tool, get_tool_prompt, parse_tool_calls, strip_tool_calls
+from .compactor import PFCompactor
+from .agents import PFAgentManager, agent_memory_maintenance, agent_context_extractor, agent_health_check
 from smart.default_prompt import build_default_prompt
 
 log = logging.getLogger("permafrost.brain")
@@ -49,6 +51,12 @@ DEFAULT_CONFIG = {
     "enable_tools": True,           # enable tool use (AI can call tools)
     "max_tool_rounds": 5,           # max consecutive tool-use rounds per message
     "allowed_user_ids": "",         # comma-separated user IDs (empty = allow all)
+    # Context compaction settings
+    "compact_message_threshold": 30,    # trigger compaction after this many messages
+    "compact_keep_recent": 10,          # keep this many recent messages during compaction
+    "compact_cooldown": 300,            # seconds between compactions
+    # Self-maintenance settings
+    "maintenance_interval": 600,        # seconds between maintenance cycles (10 min)
 }
 
 
@@ -95,10 +103,27 @@ class PFBrain:
             except Exception as e:
                 log.warning(f"Security init failed (tools run without auth): {e}")
 
+        # Context compactor (AI-powered conversation compression)
+        self.compactor = PFCompactor(
+            data_dir=str(self.data_dir),
+            config=self.config,
+        )
+
+        # Background agent manager
+        self.agent_manager = PFAgentManager(
+            data_dir=str(self.data_dir),
+            config=self.config,
+        )
+
+        # Context level tracking
+        self.context_level_file = self.data_dir / "context-level.json"
+
         # State
         self.running = False
         self.loop_count = 0
         self.last_heartbeat = 0
+        self._last_maintenance = 0  # timestamp of last maintenance cycle
+        self._maintenance_interval = self.config.get("maintenance_interval", 600)  # 10 min
 
         # Restore conversation from disk
         self._load_conversation()
@@ -120,6 +145,90 @@ class PFBrain:
                 json.dump(self._conversation, f, ensure_ascii=False, indent=2)
         except OSError as e:
             log.error(f"conversation save failed: {e}")
+
+    def _update_context_level(self):
+        """Write current context usage to context-level.json for guard/UI."""
+        level = self.compactor.get_context_level(
+            self._conversation, self._max_history
+        )
+        try:
+            with open(self.context_level_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "percent": round(level, 1),
+                    "messages": len(self._conversation),
+                    "max_messages": self._max_history * 2,
+                    "timestamp": time.time(),
+                }, f, indent=2)
+        except OSError as e:
+            log.debug(f"context level write failed: {e}")
+
+    def _auto_compact(self):
+        """Check and trigger context compaction if needed."""
+        if not self.compactor.should_compact(self._conversation):
+            return
+
+        log.info(f"Auto-compaction triggered ({len(self._conversation)} messages)")
+
+        # Run context extraction agent first (save important info before compacting)
+        if not self.agent_manager.is_running("context-extractor"):
+            self.agent_manager.run_agent(
+                "context-extractor",
+                agent_context_extractor,
+                provider=self.provider,
+            )
+            # Give it a moment to start
+            time.sleep(1)
+
+        # Compact the conversation
+        compacted = self.compactor.compact(self._conversation, self.provider)
+        old_len = len(self._conversation)
+        self._conversation = compacted
+        self._save_conversation()
+        self._update_context_level()
+
+        log.info(f"Compaction done: {old_len} -> {len(self._conversation)} messages")
+
+        # Hook: on_compact
+        self.hooks.emit("on_compact", {
+            "before": old_len,
+            "after": len(self._conversation),
+        })
+
+    def _run_maintenance(self):
+        """Periodic self-maintenance cycle.
+
+        Runs every maintenance_interval seconds:
+          1. Update context level
+          2. Check if compaction needed
+          3. Run memory GC agent (if not already running)
+          4. Run health check agent periodically
+        """
+        now = time.time()
+        if now - self._last_maintenance < self._maintenance_interval:
+            return
+        self._last_maintenance = now
+
+        log.debug("Running maintenance cycle")
+
+        # Update context tracking
+        self._update_context_level()
+
+        # Check compaction
+        self._auto_compact()
+
+        # Memory maintenance (GC, promotion, index)
+        if not self.agent_manager.is_running("memory-maintenance"):
+            self.agent_manager.run_agent(
+                "memory-maintenance",
+                agent_memory_maintenance,
+            )
+
+        # Health check (less frequent — every 5 maintenance cycles)
+        if self.loop_count % 5 == 0 and not self.agent_manager.is_running("health-check"):
+            self.agent_manager.run_agent(
+                "health-check",
+                agent_health_check,
+            )
 
     def _setup_signal_handlers(self):
         """Register graceful shutdown handlers."""
@@ -252,8 +361,8 @@ class PFBrain:
             else:
                 sys_prompt = tool_prompt
 
-        # L2 + L3: Memory context injection
-        memory_context = mem.get_context_block()
+        # L2 + L3 + Vector: Memory context injection (with semantic search if available)
+        memory_context = mem.get_context_block(query=text, config=self.config)
         if memory_context:
             sys_prompt = (sys_prompt or "") + f"\n\n## Your Memories (L2+L3)\n{memory_context}"
 
@@ -386,11 +495,18 @@ class PFBrain:
         # Update conversation history (store clean response, not raw tool calls)
         self._conversation.append({"role": "user", "content": text})
         self._conversation.append({"role": "assistant", "content": final_response})
-        # Trim history
-        if len(self._conversation) > self._max_history * 2:
+
+        # Smart compaction instead of blind truncation
+        if self.compactor.should_compact(self._conversation):
+            log.info("Conversation threshold reached, triggering auto-compaction")
+            self._auto_compact()
+        elif len(self._conversation) > self._max_history * 2:
+            # Safety fallback: hard trim if compaction somehow doesn't run
             self._conversation = self._conversation[-(self._max_history * 2):]
-        # Persist to disk
+
+        # Persist to disk and update context tracking
         self._save_conversation()
+        self._update_context_level()
 
         # Hook: on_message_out
         self.hooks.emit("on_message_out", {
@@ -475,6 +591,9 @@ class PFBrain:
             while self.running:
                 self._write_heartbeat()
                 self.loop_count += 1
+
+                # Self-maintenance cycle (compaction, memory GC, health check)
+                self._run_maintenance()
 
                 # Check for config reload trigger
                 if self.reload_trigger.exists():

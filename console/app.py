@@ -773,6 +773,61 @@ def render_status():
     except Exception:
         st.caption("Memory stats unavailable")
 
+    # Context & Agents
+    st.markdown("#### Context & Background Agents")
+    ctx_col1, ctx_col2 = st.columns(2)
+
+    # Context level
+    ctx_file = DATA_DIR / "context-level.json"
+    if ctx_file.exists():
+        try:
+            ctx = safe_read_json(ctx_file, {})
+            pct = ctx.get("percent", 0)
+            msgs = ctx.get("messages", 0)
+            max_msgs = ctx.get("max_messages", 100)
+            ctx_col1.metric("Context Usage", f"{pct:.0f}%", f"{msgs}/{max_msgs} messages")
+            if pct > 70:
+                ctx_col1.warning("Context high — compaction may trigger soon")
+        except Exception:
+            ctx_col1.metric("Context Usage", "N/A")
+    else:
+        ctx_col1.metric("Context Usage", "N/A", "Brain not started")
+
+    # Compaction history
+    compact_file = DATA_DIR / "compact-history.json"
+    if compact_file.exists():
+        try:
+            history = safe_read_json(compact_file)
+            if history:
+                last = history[-1]
+                ctx_col2.metric(
+                    "Last Compaction",
+                    f"-{last.get('reduction_pct', 0):.0f}%",
+                    f"{last.get('messages_compacted', 0)} msgs compacted",
+                )
+            else:
+                ctx_col2.metric("Compactions", "0", "No compactions yet")
+        except Exception:
+            ctx_col2.metric("Compactions", "N/A")
+    else:
+        ctx_col2.metric("Compactions", "0", "No compactions yet")
+
+    # Background agents
+    agent_file = DATA_DIR / "agent-results.json"
+    if agent_file.exists():
+        try:
+            results = safe_read_json(agent_file)
+            if results:
+                with st.expander(f"Background Agents ({len(results)} runs)"):
+                    for r in reversed(results[-5:]):
+                        icon = "\u2705" if r.get("success") else "\u274c"
+                        st.caption(
+                            f"{icon} [{r.get('agent', '?')}] {r.get('completed_at', '')[:16]} "
+                            f"— {', '.join(r.get('changes', [])[:3]) or r.get('error', 'no details')}"
+                        )
+        except Exception:
+            pass
+
     # Recent activity
     st.markdown(f"#### {t('recent_messages', _lang)}")
     msg_log = DATA_DIR / "message-log.json"
