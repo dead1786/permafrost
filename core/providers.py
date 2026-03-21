@@ -334,3 +334,86 @@ class OpenRouterProvider(BaseProvider):
         except (AttributeError, TypeError):
             pass
         return data["choices"][0]["message"]["content"]
+
+
+# ── Echo (Free Testing) ──────────────────────────────────────
+
+@register_provider("echo")
+class EchoProvider(BaseProvider):
+    """Free testing provider — no API calls, no cost.
+
+    Echoes back a smart response based on the user message,
+    demonstrating tool use and memory features without needing any API key.
+    """
+    LABEL = "Echo (Free Testing)"
+    NEEDS_API_KEY = False
+    DEFAULT_MODEL = "echo-v1"
+    MODEL_HELP = "Free testing mode — no API key needed, no cost"
+
+    def chat(self, messages: list[dict], **kwargs) -> str:
+        # Get the last user message
+        user_msg = ""
+        for m in reversed(messages):
+            if m.get("role") == "user":
+                user_msg = m.get("content", "")
+                break
+
+        # Check if this is a tool result round
+        if "[TOOL_RESULT" in user_msg:
+            return f"Got the tool results. Let me summarize: the tool executed successfully."
+
+        # Smart echo with tool use demonstration
+        lower = user_msg.lower()
+
+        # Demonstrate tool use when appropriate keywords detected
+        if any(kw in lower for kw in ["remember", "save", "note", "record"]):
+            return (
+                f"I'll save that to memory.\n\n"
+                f"[TOOL_CALL]\n"
+                f'{{"name": "memory_note", "args": {{"key": "user_note", "value": "{user_msg[:100]}", "type": "context"}}}}\n'
+                f"[/TOOL_CALL]"
+            )
+
+        if any(kw in lower for kw in ["search", "find", "recall", "what did"]):
+            return (
+                f"Let me search my memory.\n\n"
+                f"[TOOL_CALL]\n"
+                f'{{"name": "memory_search", "args": {{"query": "{user_msg[:50]}"}}}}\n'
+                f"[/TOOL_CALL]"
+            )
+
+        if any(kw in lower for kw in ["file", "read", "list", "dir"]):
+            return (
+                f"Let me check the files.\n\n"
+                f"[TOOL_CALL]\n"
+                f'{{"name": "list_files", "args": {{"path": "."}}}}\n'
+                f"[/TOOL_CALL]"
+            )
+
+        if any(kw in lower for kw in ["time", "date", "now"]):
+            return (
+                f"[TOOL_CALL]\n"
+                f'{{"name": "python_exec", "args": {{"code": "from datetime import datetime; print(datetime.now())"}}}}\n'
+                f"[/TOOL_CALL]"
+            )
+
+        if any(kw in lower for kw in ["hello", "hi", "hey"]):
+            return f"Hello! I'm running in Echo mode (free testing). I can demonstrate tools, memory, and channels without any API cost. Try asking me to remember something, search memory, or check files!"
+
+        if any(kw in lower for kw in ["help", "what can"]):
+            return (
+                "I'm Permafrost Brain running in **Echo mode** (free, no API).\n\n"
+                "Things to test:\n"
+                "- Say 'remember that I like coffee' → tests memory_note tool\n"
+                "- Say 'search memory for coffee' → tests memory_search tool\n"
+                "- Say 'what time is it' → tests python_exec tool\n"
+                "- Say 'list files' → tests list_files tool\n"
+                "- Send from different channels (TG/DC/Web) → tests routing\n\n"
+                "Switch to a real provider (Claude/GPT/Gemini) for actual AI responses."
+            )
+
+        # Default echo
+        return f"[Echo] Received: {user_msg[:200]}\n\nI'm in free testing mode. Say 'help' to see what I can demonstrate!"
+
+    def validate(self) -> tuple[bool, str]:
+        return True, ""
