@@ -124,9 +124,14 @@ class PFDiscord(BaseChannel):
                 # Discord returns newest first, reverse for chronological order
                 for msg in reversed(messages):
                     self.last_message_id = msg["id"]
+                    author = msg.get("author", {})
+                    is_bot = author.get("bot", False)
+                    content = msg.get("content", "")
+                    log.debug(f"msg id={msg['id']} author={author.get('username','?')} bot={is_bot} content_len={len(content)} content={content[:50]!r}")
                     if not self._is_authorized(msg):
+                        log.debug(f"  -> skipped (not authorized)")
                         continue
-                    text = msg.get("content", "")
+                    text = content
                     if text:
                         author = msg.get("author", {})
                         self.write_to_inbox(text, {
