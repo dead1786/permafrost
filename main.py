@@ -101,6 +101,16 @@ def start_channels(config: dict) -> dict:
         else:
             log.warning(f"discord skipped: {err}")
 
+    # LINE
+    if config.get("line_enabled"):
+        from channels.line import PFLine
+        line = PFLine(config=config, data_dir=config.get("data_dir"))
+        ok, err = line.validate()
+        if ok:
+            instances["line"] = line
+        else:
+            log.warning(f"line skipped: {err}")
+
     return instances
 
 
