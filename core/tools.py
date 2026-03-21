@@ -1541,10 +1541,101 @@ def tool_delete_reminder(reminder_id, **kwargs):
     return f"Reminder '{reminder_id}' deleted."
 
 
+# ── Tool Loop Detection (learned from OpenClaw tool-loop-detection.ts) ──
+
+import hashlib
+from collections import deque
+
+
+class ToolLoopDetector:
+    """Detect infinite tool call loops.
+
+    Four detector types (from OpenClaw):
+    - generic_repeat: same tool+args called N times
+    - poll_no_progress: polling tools with identical results
+    - ping_pong: two tools alternating A->B->A->B with stable results
+    - global_circuit_breaker: hard stop at max identical no-progress calls
+
+    Thresholds: warn at 10, critical at 20, circuit breaker at 30.
+    """
+
+    WARN_THRESHOLD = 10
+    CRITICAL_THRESHOLD = 20
+    CIRCUIT_BREAKER = 30
+    WINDOW_SIZE = 30
+
+    def __init__(self):
+        self.history: deque = deque(maxlen=self.WINDOW_SIZE)
+
+    def _hash(self, *parts) -> str:
+        return hashlib.sha256("|".join(str(p) for p in parts).encode()).hexdigest()[:16]
+
+    def record_call(self, tool_name: str, args: dict, result: str) -> dict:
+        """Record a tool call and check for loops.
+
+        Returns {"status": "ok"|"warn"|"critical"|"blocked", "reason": str}
+        """
+        args_hash = self._hash(tool_name, json.dumps(args, sort_keys=True, default=str))
+        result_hash = self._hash(result[:2000])
+
+        entry = {"tool": tool_name, "args_hash": args_hash, "result_hash": result_hash}
+        self.history.append(entry)
+
+        # 1. Generic repeat: same tool+args
+        repeat_count = sum(1 for h in self.history if h["args_hash"] == args_hash)
+
+        if repeat_count >= self.CIRCUIT_BREAKER:
+            return {"status": "blocked",
+                    "reason": "Circuit breaker: {} called {} times with identical args".format(tool_name, repeat_count)}
+
+        # 2. Poll no progress: same tool+args+result
+        no_progress_count = sum(1 for h in self.history
+                                if h["args_hash"] == args_hash and h["result_hash"] == result_hash)
+
+        if no_progress_count >= self.CRITICAL_THRESHOLD:
+            return {"status": "critical",
+                    "reason": "No progress: {} returned identical results {} times".format(tool_name, no_progress_count)}
+
+        # 3. Ping-pong: A->B->A->B pattern
+        if len(self.history) >= 4:
+            recent = list(self.history)[-4:]
+            if (recent[0]["args_hash"] == recent[2]["args_hash"] and
+                recent[1]["args_hash"] == recent[3]["args_hash"] and
+                recent[0]["args_hash"] != recent[1]["args_hash"] and
+                recent[0]["result_hash"] == recent[2]["result_hash"] and
+                recent[1]["result_hash"] == recent[3]["result_hash"]):
+                pp_count = 0
+                hist_list = list(self.history)
+                for i in range(0, len(hist_list) - 1, 2):
+                    if (i + 1 < len(hist_list) and
+                        hist_list[i]["args_hash"] == recent[0]["args_hash"] and
+                        hist_list[i + 1]["args_hash"] == recent[1]["args_hash"]):
+                        pp_count += 1
+                if pp_count >= self.WARN_THRESHOLD // 2:
+                    return {"status": "warn",
+                            "reason": "Ping-pong loop: {} <-> {} ({} cycles)".format(
+                                recent[0]["tool"], recent[1]["tool"], pp_count)}
+
+        # 4. Warn on moderate repetition
+        if repeat_count >= self.WARN_THRESHOLD:
+            return {"status": "warn",
+                    "reason": "{} called {} times with same args".format(tool_name, repeat_count)}
+
+        return {"status": "ok", "reason": ""}
+
+    def reset(self):
+        """Reset loop detection state (e.g. after compaction)."""
+        self.history.clear()
+
+
+# Global loop detector instance
+_loop_detector = ToolLoopDetector()
+
+
 # ── Tool Executor ─────────────────────────────────────────────
 
 def execute_tool(name: str, args: dict, security=None) -> str:
-    """Execute a registered tool by name.
+    """Execute a registered tool by name, with loop detection.
 
     Args:
         name: Tool name (must be in TOOLS registry).
@@ -1565,10 +1656,23 @@ def execute_tool(name: str, args: dict, security=None) -> str:
             return f"[blocked] Tool '{name}' not allowed: {reason}"
 
     try:
-        return TOOLS[name]["function"](**args)
+        result = TOOLS[name]["function"](**args)
     except Exception as e:
         log.error(f"Tool '{name}' execution failed: {e}")
         return f"[error] Tool execution failed: {e}"
+
+    # Loop detection
+    loop_check = _loop_detector.record_call(name, args, result)
+    if loop_check["status"] == "blocked":
+        log.error(f"Tool loop BLOCKED: {loop_check['reason']}")
+        return f"[blocked] {loop_check['reason']}. Tool execution halted to prevent infinite loop."
+    elif loop_check["status"] == "critical":
+        log.warning(f"Tool loop CRITICAL: {loop_check['reason']}")
+        result += f"\n\n[WARNING] {loop_check['reason']}. Consider changing approach."
+    elif loop_check["status"] == "warn":
+        log.info(f"Tool loop warn: {loop_check['reason']}")
+
+    return result
 
 
 # ── Schema Export ─────────────────────────────────────────────
