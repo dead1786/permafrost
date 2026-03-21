@@ -952,6 +952,430 @@ class CopilotProvider(BaseProvider):
         return True, ""
 
 
+# ── OpenAI Codex (ChatGPT subscription OAuth) ───────────────
+
+@register_provider("openai-codex")
+class OpenAICodexProvider(BaseProvider):
+    """Use your ChatGPT subscription via browser OAuth login.
+
+    No API key needed — authenticates through ChatGPT web login.
+    Requires active ChatGPT Plus/Pro/Team subscription.
+    """
+    LABEL = "ChatGPT (Subscription OAuth)"
+    NEEDS_API_KEY = False
+    SUPPORTS_TOOLS = True
+    DEFAULT_MODEL = "gpt-4o"
+    MODEL_HELP = "e.g. gpt-4o, o3-mini, gpt-4o-mini"
+
+    AUTH_URL = "https://auth.openai.com/authorize"
+    TOKEN_URL = "https://auth.openai.com/oauth/token"
+    API_BASE = "https://api.openai.com/v1"
+    CLIENT_ID = "pdlLIX2Y72MIl2rhLhTE9VV9bN905kBh"
+    REDIRECT_URI = "http://localhost:1455/oauth-callback"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._token_file = os.path.expanduser("~/.permafrost/openai-codex-token.json")
+
+    def _load_token(self) -> dict:
+        if os.path.exists(self._token_file):
+            try:
+                return json.loads(open(self._token_file, "r", encoding="utf-8").read())
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    def _save_token(self, data: dict):
+        with open(self._token_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+    def _get_access_token(self) -> str:
+        import time as _time
+        token = self._load_token()
+        if token.get("access_token") and _time.time() < token.get("expires_at", 0) - 60:
+            return token["access_token"]
+        if token.get("refresh_token"):
+            try:
+                return self._refresh(token["refresh_token"])
+            except Exception:
+                pass
+        return self._browser_oauth()
+
+    def _browser_oauth(self) -> str:
+        """Start local HTTP server, open browser for OAuth, catch redirect."""
+        import threading, urllib.parse, http.server, time as _time, webbrowser
+
+        auth_code = [None]
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                qs = urllib.parse.urlparse(self.path).query
+                params = urllib.parse.parse_qs(qs)
+                if "code" in params:
+                    auth_code[0] = params["code"][0]
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"Login successful! You can close this tab.")
+                else:
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(b"Login failed.")
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 1455), Handler)
+        thread = threading.Thread(target=server.handle_request, daemon=True)
+        thread.start()
+
+        import secrets
+        state = secrets.token_urlsafe(32)
+        url = (f"{self.AUTH_URL}?client_id={self.CLIENT_ID}"
+               f"&redirect_uri={urllib.parse.quote(self.REDIRECT_URI)}"
+               f"&response_type=code&scope=openid%20profile%20email"
+               f"&state={state}")
+
+        log.info(f"OpenAI OAuth: Opening browser for login...")
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+
+        try:
+            from core.scheduler import PFScheduler
+            PFScheduler().notify_user(f"ChatGPT Login Required!\nVisit: {url}")
+        except Exception:
+            pass
+
+        thread.join(timeout=120)
+        server.server_close()
+
+        if not auth_code[0]:
+            raise RuntimeError("ChatGPT OAuth timed out. Visit the URL manually.")
+
+        return self._exchange_code(auth_code[0])
+
+    def _exchange_code(self, code: str) -> str:
+        import requests, time as _time
+        r = requests.post(self.TOKEN_URL, json={
+            "client_id": self.CLIENT_ID,
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": self.REDIRECT_URI,
+        }, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        data["expires_at"] = _time.time() + data.get("expires_in", 3600)
+        self._save_token(data)
+        return data["access_token"]
+
+    def _refresh(self, refresh_token: str) -> str:
+        import requests, time as _time
+        r = requests.post(self.TOKEN_URL, json={
+            "client_id": self.CLIENT_ID,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        }, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        data["expires_at"] = _time.time() + data.get("expires_in", 3600)
+        self._save_token(data)
+        return data["access_token"]
+
+    def chat(self, messages: list[dict], **kwargs) -> str:
+        return self._retry(self._do_chat, messages, **kwargs)
+
+    def _do_chat(self, messages: list[dict], **kwargs) -> str:
+        import requests
+        token = self._get_access_token()
+        r = requests.post(f"{self.API_BASE}/chat/completions", headers={
+            "Authorization": f"Bearer {token}",
+        }, json={"model": self.model, "messages": messages}, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+
+    def chat_with_tools(self, messages: list[dict], tools: list[dict] = None, **kwargs) -> dict:
+        import requests
+        token = self._get_access_token()
+        params = {"model": self.model, "messages": messages}
+        if tools:
+            params["tools"] = tools
+        r = requests.post(f"{self.API_BASE}/chat/completions", headers={
+            "Authorization": f"Bearer {token}",
+        }, json=params, timeout=self.timeout)
+        r.raise_for_status()
+        msg = r.json()["choices"][0]["message"]
+        tool_calls = []
+        if msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                try:
+                    args = json.loads(tc["function"]["arguments"])
+                except (json.JSONDecodeError, TypeError, KeyError):
+                    args = {}
+                tool_calls.append({"name": tc["function"]["name"], "args": args})
+        return {"text": msg.get("content", ""), "tool_calls": tool_calls}
+
+    def validate(self) -> tuple[bool, str]:
+        return True, ""
+
+
+# ── MiniMax Portal (free OAuth) ──────────────────────────────
+
+@register_provider("minimax")
+class MiniMaxProvider(BaseProvider):
+    """MiniMax AI — free coding assistant via OAuth login.
+
+    No API key needed. Free tier available.
+    """
+    LABEL = "MiniMax (Free OAuth)"
+    NEEDS_API_KEY = False
+    SUPPORTS_TOOLS = True
+    DEFAULT_MODEL = "MiniMax-M1"
+    MODEL_HELP = "e.g. MiniMax-M1, abab6.5s-chat"
+
+    API_BASE_GLOBAL = "https://api.minimax.io/v1"
+    API_BASE_CN = "https://api.minimaxi.com/v1"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._token_file = os.path.expanduser("~/.permafrost/minimax-oauth-token.json")
+        # Use api_key field as region selector: "cn" for China, default global
+        self.api_base = self.API_BASE_CN if self.api_key == "cn" else self.API_BASE_GLOBAL
+
+    def _load_token(self) -> dict:
+        if os.path.exists(self._token_file):
+            try:
+                return json.loads(open(self._token_file, "r", encoding="utf-8").read())
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    def _save_token(self, data: dict):
+        with open(self._token_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+    def _get_token(self) -> str:
+        import time as _time
+        token = self._load_token()
+        if token.get("access_token") and _time.time() < token.get("expires_at", 0) - 60:
+            return token["access_token"]
+        # MiniMax uses simple API key from their portal — store after first manual entry
+        if token.get("api_key"):
+            return token["api_key"]
+        # Prompt user to get key from minimax portal
+        try:
+            from core.scheduler import PFScheduler
+            PFScheduler().notify_user(
+                "MiniMax Setup: Visit https://www.minimax.io to get your free API key, "
+                "then set it in PF Settings (API Key field)."
+            )
+        except Exception:
+            pass
+        raise RuntimeError("MiniMax: Set your API key from minimax.io in Settings")
+
+    def chat(self, messages: list[dict], **kwargs) -> str:
+        return self._retry(self._do_chat, messages, **kwargs)
+
+    def _do_chat(self, messages: list[dict], **kwargs) -> str:
+        import requests
+        token = self._get_token()
+        r = requests.post(f"{self.api_base}/chat/completions", headers={
+            "Authorization": f"Bearer {token}",
+        }, json={"model": self.model, "messages": messages}, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+
+    def chat_with_tools(self, messages: list[dict], tools: list[dict] = None, **kwargs) -> dict:
+        import requests
+        token = self._get_token()
+        params = {"model": self.model, "messages": messages}
+        if tools:
+            params["tools"] = tools
+        r = requests.post(f"{self.api_base}/chat/completions", headers={
+            "Authorization": f"Bearer {token}",
+        }, json=params, timeout=self.timeout)
+        r.raise_for_status()
+        msg = r.json()["choices"][0]["message"]
+        tool_calls = []
+        if msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                try:
+                    args = json.loads(tc["function"]["arguments"])
+                except (json.JSONDecodeError, TypeError, KeyError):
+                    args = {}
+                tool_calls.append({"name": tc["function"]["name"], "args": args})
+        return {"text": msg.get("content", ""), "tool_calls": tool_calls}
+
+    def validate(self) -> tuple[bool, str]:
+        return True, ""
+
+
+# ── Chutes (free OAuth + PKCE) ───────────────────────────────
+
+@register_provider("chutes")
+class ChutesProvider(BaseProvider):
+    """Chutes AI — free tier with OAuth PKCE login.
+
+    No API key needed. Supports multiple open-source models.
+    """
+    LABEL = "Chutes (Free OAuth)"
+    NEEDS_API_KEY = False
+    SUPPORTS_TOOLS = True
+    DEFAULT_MODEL = "deepseek-ai/DeepSeek-V3-0324"
+    MODEL_HELP = "e.g. deepseek-ai/DeepSeek-V3-0324, meta-llama/Llama-4-Scout-17B-16E"
+
+    AUTH_URL = "https://api.chutes.ai/idp/authorize"
+    TOKEN_URL = "https://api.chutes.ai/idp/token"
+    API_BASE = "https://llm.chutes.ai/v1"
+    REDIRECT_URI = "http://127.0.0.1:1456/oauth-callback"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._token_file = os.path.expanduser("~/.permafrost/chutes-oauth-token.json")
+
+    def _load_token(self) -> dict:
+        if os.path.exists(self._token_file):
+            try:
+                return json.loads(open(self._token_file, "r", encoding="utf-8").read())
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    def _save_token(self, data: dict):
+        with open(self._token_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+    def _get_access_token(self) -> str:
+        import time as _time
+        token = self._load_token()
+        if token.get("access_token") and _time.time() < token.get("expires_at", 0) - 60:
+            return token["access_token"]
+        if token.get("refresh_token"):
+            try:
+                return self._refresh(token["refresh_token"])
+            except Exception:
+                pass
+        return self._pkce_oauth()
+
+    def _pkce_oauth(self) -> str:
+        """OAuth with PKCE — browser login + local callback."""
+        import threading, urllib.parse, http.server, hashlib, base64, secrets, time as _time, webbrowser
+
+        code_verifier = secrets.token_urlsafe(64)[:128]
+        code_challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(code_verifier.encode()).digest()
+        ).rstrip(b"=").decode()
+        state = secrets.token_urlsafe(32)
+
+        auth_code = [None]
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                qs = urllib.parse.urlparse(self.path).query
+                params = urllib.parse.parse_qs(qs)
+                if "code" in params:
+                    auth_code[0] = params["code"][0]
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"Login successful! You can close this tab.")
+                else:
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(b"Login failed.")
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 1456), Handler)
+        thread = threading.Thread(target=server.handle_request, daemon=True)
+        thread.start()
+
+        url = (f"{self.AUTH_URL}?client_id=permafrost"
+               f"&redirect_uri={urllib.parse.quote(self.REDIRECT_URI)}"
+               f"&response_type=code&state={state}"
+               f"&code_challenge={code_challenge}&code_challenge_method=S256")
+
+        log.info(f"Chutes OAuth: Opening browser...")
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+
+        try:
+            from core.scheduler import PFScheduler
+            PFScheduler().notify_user(f"Chutes Login Required!\nVisit: {url}")
+        except Exception:
+            pass
+
+        thread.join(timeout=120)
+        server.server_close()
+
+        if not auth_code[0]:
+            raise RuntimeError("Chutes OAuth timed out.")
+
+        return self._exchange_code(auth_code[0], code_verifier)
+
+    def _exchange_code(self, code: str, verifier: str) -> str:
+        import requests, time as _time
+        r = requests.post(self.TOKEN_URL, json={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": self.REDIRECT_URI,
+            "code_verifier": verifier,
+        }, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        data["expires_at"] = _time.time() + data.get("expires_in", 3600)
+        self._save_token(data)
+        return data["access_token"]
+
+    def _refresh(self, refresh_token: str) -> str:
+        import requests, time as _time
+        r = requests.post(self.TOKEN_URL, json={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        }, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        data["expires_at"] = _time.time() + data.get("expires_in", 3600)
+        self._save_token(data)
+        return data["access_token"]
+
+    def chat(self, messages: list[dict], **kwargs) -> str:
+        return self._retry(self._do_chat, messages, **kwargs)
+
+    def _do_chat(self, messages: list[dict], **kwargs) -> str:
+        import requests
+        token = self._get_access_token()
+        r = requests.post(f"{self.API_BASE}/chat/completions", headers={
+            "Authorization": f"Bearer {token}",
+        }, json={"model": self.model, "messages": messages}, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+
+    def chat_with_tools(self, messages: list[dict], tools: list[dict] = None, **kwargs) -> dict:
+        import requests
+        token = self._get_access_token()
+        params = {"model": self.model, "messages": messages}
+        if tools:
+            params["tools"] = tools
+        r = requests.post(f"{self.API_BASE}/chat/completions", headers={
+            "Authorization": f"Bearer {token}",
+        }, json=params, timeout=self.timeout)
+        r.raise_for_status()
+        msg = r.json()["choices"][0]["message"]
+        tool_calls = []
+        if msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                try:
+                    args = json.loads(tc["function"]["arguments"])
+                except (json.JSONDecodeError, TypeError, KeyError):
+                    args = {}
+                tool_calls.append({"name": tc["function"]["name"], "args": args})
+        return {"text": msg.get("content", ""), "tool_calls": tool_calls}
+
+    def validate(self) -> tuple[bool, str]:
+        return True, ""
+
+
 # ── Echo (Free Testing) ──────────────────────────────────────
 
 @register_provider("echo")
