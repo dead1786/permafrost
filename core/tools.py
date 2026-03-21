@@ -1124,6 +1124,72 @@ def tool_resize_image(path: str, output: str, width: int = 800, height: int = 0,
         return f"[error] {e}"
 
 
+# ── Multi-Agent Tools ─────────────────────────────────────────
+
+@register_tool("spawn_agent", "Create an independent AI agent with its own memory and brain", {
+    "name": {"type": "string", "description": "Agent name (lowercase, e.g. 'researcher')"},
+    "persona": {"type": "string", "description": "Agent's role/personality (system prompt)"},
+    "task": {"type": "string", "description": "Initial task to assign"},
+})
+def tool_spawn_agent(name: str, persona: str = "", task: str = "", **kwargs) -> str:
+    from core.multi_agent import PFMultiAgent
+    try:
+        ma = PFMultiAgent("main", os.path.expanduser("~/.permafrost"))
+        return ma.spawn_agent(name, persona, task)
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("send_to_agent", "Send a message to another agent", {
+    "agent_name": {"type": "string", "description": "Target agent name"},
+    "message": {"type": "string", "description": "Message to send"},
+})
+def tool_send_to_agent(agent_name: str, message: str, **kwargs) -> str:
+    from core.multi_agent import PFMultiAgent
+    try:
+        ma = PFMultiAgent("main", os.path.expanduser("~/.permafrost"))
+        ma.send(agent_name, message)
+        return f"Message sent to agent '{agent_name}'"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("list_agents", "List all spawned AI agents", {})
+def tool_list_agents(**kwargs) -> str:
+    from core.multi_agent import PFMultiAgent
+    try:
+        ma = PFMultiAgent("main", os.path.expanduser("~/.permafrost"))
+        agents = ma.list_agents()
+        if not agents:
+            return "No agents spawned yet."
+        lines = []
+        for a in agents:
+            lines.append(f"  {a.get('name','?')} — {a.get('persona','')[:60]} (created: {a.get('created_at','?')[:10]})")
+        return f"Agents ({len(agents)}):\n" + "\n".join(lines)
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("read_agent_outbox", "Read messages from an agent's outbox", {
+    "agent_name": {"type": "string", "description": "Agent name to read from"},
+})
+def tool_read_agent_outbox(agent_name: str, **kwargs) -> str:
+    from core.multi_agent import PFMultiAgent
+    try:
+        ma = PFMultiAgent("main", os.path.expanduser("~/.permafrost"))
+        msgs = ma.check_inbox()  # Check our own inbox for messages from that agent
+        relevant = [m for m in msgs if m.get("from") == agent_name]
+        if not relevant:
+            return f"No messages from agent '{agent_name}'."
+        lines = []
+        for m in relevant[-5:]:
+            lines.append(f"  [{m.get('timestamp','')[:16]}] {m.get('message','')[:200]}")
+        ma.mark_read()
+        return f"Messages from {agent_name}:\n" + "\n".join(lines)
+    except Exception as e:
+        return f"[error] {e}"
+
+
 # ── Self-Evolution (Rules + Tools) ────────────────────────────
 
 @register_tool("update_rules", "Add or update a self-learned rule (persists across restarts)", {

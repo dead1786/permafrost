@@ -48,6 +48,7 @@ DEFAULT_TOOL_WHITELIST = {
         "set_reminder", "list_reminders", "delete_reminder",
         "send_notification", "create_tool",
         "update_rules", "read_rules",
+        "spawn_agent", "send_to_agent", "list_agents", "read_agent_outbox",
         "create_pdf", "create_spreadsheet", "read_spreadsheet",
         "create_document", "read_pdf", "read_image", "resize_image",
         "download_file", "system_info", "process_list", "kill_process",
