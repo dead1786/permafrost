@@ -28,13 +28,21 @@ from .base import BaseChannel, register_channel
 
 log = logging.getLogger("permafrost.channels.line")
 
-# Try importing pyngrok — graceful fallback if not installed
+# Try importing tunnel libraries — prefer cloudflare (no account needed), fallback to ngrok
+HAS_CLOUDFLARE = False
+HAS_PYNGROK = False
 try:
-    from pyngrok import ngrok, conf as ngrok_conf
-    HAS_PYNGROK = True
+    from pycloudflared import try_cloudflare
+    HAS_CLOUDFLARE = True
 except ImportError:
-    HAS_PYNGROK = False
-    log.warning("pyngrok not installed — LINE webhook tunnel unavailable. pip install pyngrok>=7.0.0")
+    pass
+
+if not HAS_CLOUDFLARE:
+    try:
+        from pyngrok import ngrok, conf as ngrok_conf
+        HAS_PYNGROK = True
+    except ImportError:
+        log.warning("No tunnel library — LINE needs pycloudflared or pyngrok. pip install pycloudflared")
 
 
 # ── Webhook HTTP Handler ─────────────────────────────────────────
@@ -110,15 +118,13 @@ class PFLine(BaseChannel):
          "help": "Long-lived token from LINE Developers console", "required": True},
         {"name": "line_channel_secret", "label": "Channel Secret", "type": "password",
          "help": "For webhook signature verification (optional but recommended)", "required": False},
-        {"name": "ngrok_authtoken", "label": "ngrok Auth Token", "type": "password",
-         "help": "Free at ngrok.com — needed for LINE webhook tunnel", "required": True},
     ]
 
     def __init__(self, config: dict, data_dir: str = None):
         super().__init__(config, data_dir)
         self.channel_secret = config.get("line_channel_secret", "")
         self.access_token = config.get("line_access_token", "")
-        self.ngrok_authtoken = config.get("ngrok_authtoken", "")
+        self.ngrok_authtoken = config.get("ngrok_authtoken", "")  # optional, only if using ngrok
         self.webhook_port = int(config.get("line_webhook_port", 8504))
         self.api_base = "https://api.line.me/v2/bot"
         self.headers = {
@@ -136,10 +142,10 @@ class PFLine(BaseChannel):
     def validate(self) -> tuple[bool, str]:
         if not self.access_token:
             return False, "LINE Channel Access Token is required"
-        if not self.ngrok_authtoken:
-            return False, "ngrok Auth Token is required for LINE webhook"
-        if not HAS_PYNGROK:
-            return False, "pyngrok not installed — pip install pyngrok>=7.0.0"
+        if not HAS_CLOUDFLARE and not HAS_PYNGROK:
+            return False, "No tunnel library — pip install pycloudflared"
+        if HAS_PYNGROK and not HAS_CLOUDFLARE and not self.ngrok_authtoken:
+            return False, "ngrok Auth Token required (or pip install pycloudflared for zero-config)"
         return True, ""
 
     # ── Sending ───────────────────────────────────────────────────
@@ -273,11 +279,21 @@ class PFLine(BaseChannel):
         thread.start()
         log.info(f"webhook HTTP server listening on port {self.webhook_port}")
 
-    def _start_ngrok_tunnel(self) -> str:
-        """Open an ngrok tunnel and return the public URL."""
-        ngrok_conf.get_default().auth_token = self.ngrok_authtoken
-        self._tunnel = ngrok.connect(self.webhook_port, "http")
-        public_url = self._tunnel.public_url
+    def _start_tunnel(self) -> str:
+        """Open a tunnel (cloudflare or ngrok) and return the public URL."""
+        if HAS_CLOUDFLARE:
+            # Cloudflare — zero config, no account needed
+            self._tunnel = try_cloudflare(self.webhook_port)
+            public_url = self._tunnel.tunnel
+            log.info(f"Cloudflare tunnel opened: {public_url}")
+        elif HAS_PYNGROK:
+            # ngrok fallback
+            ngrok_conf.get_default().auth_token = self.ngrok_authtoken
+            self._tunnel = ngrok.connect(self.webhook_port, "http")
+            public_url = self._tunnel.public_url
+            log.info(f"ngrok tunnel opened: {public_url}")
+        else:
+            raise RuntimeError("No tunnel library available")
         # Ensure HTTPS
         if public_url.startswith("http://"):
             public_url = public_url.replace("http://", "https://", 1)
@@ -310,14 +326,14 @@ class PFLine(BaseChannel):
             log.info("webhook HTTP server stopped")
         if self._tunnel:
             try:
-                ngrok.disconnect(self._tunnel.public_url)
+                if HAS_CLOUDFLARE:
+                    self._tunnel.terminate()
+                elif HAS_PYNGROK:
+                    ngrok.disconnect(self._tunnel.public_url)
+                    ngrok.kill()
             except Exception:
                 pass
-            try:
-                ngrok.kill()
-            except Exception:
-                pass
-            log.info("ngrok tunnel closed")
+            log.info("tunnel closed")
 
     # ── Main run loop ─────────────────────────────────────────────
 
@@ -335,15 +351,15 @@ class PFLine(BaseChannel):
 
         # 2. Open ngrok tunnel
         try:
-            public_url = self._start_ngrok_tunnel()
+            public_url = self._start_tunnel()
         except Exception as e:
-            log.error(f"ngrok tunnel failed: {e}")
+            log.error(f"tunnel failed: {e}")
             self._cleanup()
             self.running = False
             return
 
         self.webhook_url = f"{public_url}/webhook"
-        log.info(f"ngrok tunnel open: {self.webhook_url}")
+        log.info(f"tunnel open: {self.webhook_url}")
 
         # 3. Register webhook URL with LINE
         if not self._register_webhook_url(self.webhook_url):

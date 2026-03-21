@@ -12,5 +12,5 @@ openai>=1.50.0
 google-generativeai>=0.8.0
 # Ollama and OpenRouter use requests, no extra deps
 
-# LINE webhook tunnel
-pyngrok>=7.0.0
+# LINE webhook tunnel (cloudflare = zero config, ngrok = needs account)
+pycloudflared>=0.2.0
