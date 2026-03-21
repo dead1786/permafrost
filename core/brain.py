@@ -328,15 +328,31 @@ class PFBrain:
                                 new_config = json.load(f)
                         self.config.update(new_config)
                         self._provider = None  # Force re-init provider
-                        # Re-register channels
+                        # Re-register and start new channels
+                        import threading
                         from channels.base import _CHANNELS
                         for ch_name, ch_cls in _CHANNELS.items():
                             key = f"{ch_name}_enabled"
                             if new_config.get(key) and ch_name not in self.channel_inboxes:
                                 ch_instance = ch_cls(new_config, str(self.data_dir))
+                                ok, err = ch_instance.validate()
+                                if not ok:
+                                    log.warning(f"{ch_name} skipped: {err}")
+                                    continue
                                 inbox_path = str(self.data_dir / f"{ch_name}-inbox.json")
                                 self.register_channel(ch_name, inbox_path, ch_instance.reply_handler)
-                                log.info(f"Channel added: {ch_name}")
+                                # Start polling thread for non-web channels
+                                if ch_name != "web":
+                                    def _run_ch(ch=ch_instance):
+                                        try:
+                                            ch.run()
+                                        except Exception as e:
+                                            log.error(f"channel {ch.name} crashed: {e}")
+                                    t = threading.Thread(target=_run_ch, name=f"channel-{ch_name}", daemon=True)
+                                    t.start()
+                                    log.info(f"Channel started: {ch_name} (polling thread)")
+                                else:
+                                    log.info(f"Channel added: {ch_name}")
                         log.info(f"Config reloaded. Channels: {list(self.channel_inboxes.keys())}")
                     except Exception as e:
                         log.error(f"Config reload failed: {e}")
