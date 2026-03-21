@@ -188,6 +188,8 @@ class PFSlack(BaseChannel):
 
 Permafrost includes a 4-layer security system. See [SECURITY.md](SECURITY.md) for details.
 
+> **Warning**: Do NOT run Permafrost with administrator/root privileges. The AI has tool access (bash, file operations) — running as admin gives it full system control. Always use a normal user account.
+
 ## Contributing
 
 Contributions welcome! Please:
