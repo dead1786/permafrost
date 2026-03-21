@@ -1701,7 +1701,7 @@ def parse_tool_calls(text: str) -> list[dict]:
     # Try standard format first, then variants (TOOL_CODE, etc.)
     matches = list(_TOOL_CALL_PATTERN.finditer(text))
     if not matches:
-        matches = list(_TOOL_CALL_VARIANTS.finditer(text))
+        matches = list(_TOOL_CALL_ANY.finditer(text))
     for match in matches:
         raw = match.group(1)
         try:
@@ -1729,7 +1729,7 @@ def strip_tool_calls(text: str) -> str:
     and any remaining JSON-looking tool invocations.
     """
     result = _TOOL_CALL_PATTERN.sub("", text)
-    result = _TOOL_CALL_VARIANTS.sub("", result)
+    result = _TOOL_CALL_ANY.sub("", result)
     result = _TOOL_CALL_BACKTICK.sub("", result)
     # Last resort: catch any remaining [ANYTHING]{json}[/ANYTHING] patterns
     result = re.sub(
