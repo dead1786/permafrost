@@ -450,6 +450,426 @@ class OpenRouterProvider(BaseProvider):
         return data["choices"][0]["message"]["content"]
 
 
+# ── Custom Endpoint (any OpenAI-compatible local proxy) ──────
+
+@register_provider("custom")
+class CustomEndpointProvider(BaseProvider):
+    """Connect to ANY OpenAI-compatible endpoint (Claude Max Proxy, LiteLLM, text-gen-webui, etc).
+
+    Set API Key field to the base URL, e.g. http://localhost:3456/v1
+    Model field to the model name available on that endpoint.
+    """
+    LABEL = "Custom Endpoint (Local Proxy)"
+    NEEDS_API_KEY = False
+    SUPPORTS_TOOLS = True
+    DEFAULT_MODEL = "default"
+    MODEL_HELP = "Any model available on your local proxy"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # api_key field is used as base_url for custom endpoints
+        self.base_url = self.api_key or "http://localhost:3456/v1"
+        if not self.base_url.startswith("http"):
+            self.base_url = f"http://{self.base_url}"
+
+    def chat(self, messages: list[dict], **kwargs) -> str:
+        return self._retry(self._do_chat, messages, **kwargs)
+
+    def _do_chat(self, messages: list[dict], **kwargs) -> str:
+        import requests
+        r = requests.post(
+            f"{self.base_url}/chat/completions",
+            json={"model": self.model, "messages": messages},
+            timeout=self.timeout,
+        )
+        r.raise_for_status()
+        data = r.json()
+        try:
+            usage = data.get("usage", {})
+            if usage:
+                self._track_usage(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+        except (AttributeError, TypeError):
+            pass
+        return data["choices"][0]["message"]["content"]
+
+    def chat_with_tools(self, messages: list[dict], tools: list[dict] = None, **kwargs) -> dict:
+        import requests
+        params = {"model": self.model, "messages": messages}
+        if tools:
+            params["tools"] = tools
+        r = requests.post(
+            f"{self.base_url}/chat/completions",
+            json=params, timeout=self.timeout,
+        )
+        r.raise_for_status()
+        data = r.json()
+        msg = data["choices"][0]["message"]
+        tool_calls = []
+        if msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                try:
+                    args = json.loads(tc["function"]["arguments"])
+                except (json.JSONDecodeError, TypeError, KeyError):
+                    args = {}
+                tool_calls.append({"name": tc["function"]["name"], "args": args})
+        return {"text": msg.get("content", ""), "tool_calls": tool_calls}
+
+    def validate(self) -> tuple[bool, str]:
+        if not self.model:
+            return False, "Model name required"
+        return True, ""
+
+
+# ── Qwen (free, OAuth device code flow) ──────────────────────
+
+@register_provider("qwen")
+class QwenProvider(BaseProvider):
+    """Qwen (Tongyi Qianwen) — free AI via OAuth device code flow.
+
+    No API key needed. On first use, displays a URL + code.
+    User visits the URL in browser and enters the code.
+    Token is saved and auto-refreshes.
+    """
+    LABEL = "Qwen (Free, OAuth Login)"
+    NEEDS_API_KEY = False
+    SUPPORTS_TOOLS = True
+    DEFAULT_MODEL = "qwen-coder-plus-latest"
+    MODEL_HELP = "e.g. qwen-coder-plus-latest, qwen-turbo-latest, qwen-max-latest"
+
+    OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
+    OAUTH_BASE = "https://chat.qwen.ai"
+    API_BASE = "https://chat.qwen.ai/api/v1"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._token_file = None
+
+    def _get_token_file(self):
+        if self._token_file is None:
+            import os
+            data_dir = os.path.expanduser("~/.permafrost")
+            self._token_file = os.path.join(data_dir, "qwen-oauth-token.json")
+        return self._token_file
+
+    def _load_token(self) -> dict:
+        import os
+        tf = self._get_token_file()
+        if os.path.exists(tf):
+            try:
+                return json.loads(open(tf, "r", encoding="utf-8").read())
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    def _save_token(self, token_data: dict):
+        with open(self._get_token_file(), "w", encoding="utf-8") as f:
+            json.dump(token_data, f, indent=2)
+
+    def _get_access_token(self) -> str:
+        """Get valid access token, refreshing or doing device flow if needed."""
+        import time as _time
+        token = self._load_token()
+
+        # Check if we have a valid token
+        if token.get("access_token"):
+            expires_at = token.get("expires_at", 0)
+            if _time.time() < expires_at - 60:
+                return token["access_token"]
+            # Try refresh
+            if token.get("refresh_token"):
+                try:
+                    return self._refresh_token(token["refresh_token"])
+                except Exception:
+                    pass
+
+        # Need new device code flow
+        return self._device_code_flow()
+
+    def _device_code_flow(self) -> str:
+        """OAuth device code flow — user visits URL and enters code."""
+        import requests, time as _time
+
+        # Request device code
+        r = requests.post(f"{self.OAUTH_BASE}/api/v1/oauth2/device-code", json={
+            "client_id": self.OAUTH_CLIENT_ID,
+        }, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+
+        device_code = data.get("device_code", "")
+        user_code = data.get("user_code", "")
+        verification_url = data.get("verification_uri", data.get("verification_url", ""))
+        interval = data.get("interval", 5)
+        expires_in = data.get("expires_in", 300)
+
+        log.info(f"Qwen OAuth: Visit {verification_url} and enter code: {user_code}")
+
+        # Also try to notify user through channels
+        try:
+            from core.scheduler import PFScheduler
+            sched = PFScheduler()
+            sched.notify_user(
+                f"Qwen OAuth Login Required!\n"
+                f"Visit: {verification_url}\n"
+                f"Enter code: {user_code}\n"
+                f"Expires in {expires_in // 60} minutes."
+            )
+        except Exception:
+            pass
+
+        # Poll for token
+        deadline = _time.time() + expires_in
+        while _time.time() < deadline:
+            _time.sleep(interval)
+            try:
+                r = requests.post(f"{self.OAUTH_BASE}/api/v1/oauth2/token", json={
+                    "client_id": self.OAUTH_CLIENT_ID,
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    "device_code": device_code,
+                }, timeout=10)
+                if r.status_code == 200:
+                    token_data = r.json()
+                    token_data["expires_at"] = _time.time() + token_data.get("expires_in", 3600)
+                    self._save_token(token_data)
+                    log.info("Qwen OAuth: Login successful!")
+                    return token_data["access_token"]
+            except Exception:
+                pass
+
+        raise RuntimeError("Qwen OAuth: Login timed out. Please try again.")
+
+    def _refresh_token(self, refresh_token: str) -> str:
+        import requests, time as _time
+        r = requests.post(f"{self.OAUTH_BASE}/api/v1/oauth2/token", json={
+            "client_id": self.OAUTH_CLIENT_ID,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        }, timeout=10)
+        r.raise_for_status()
+        token_data = r.json()
+        token_data["expires_at"] = _time.time() + token_data.get("expires_in", 3600)
+        self._save_token(token_data)
+        return token_data["access_token"]
+
+    def chat(self, messages: list[dict], **kwargs) -> str:
+        return self._retry(self._do_chat, messages, **kwargs)
+
+    def _do_chat(self, messages: list[dict], **kwargs) -> str:
+        import requests
+        token = self._get_access_token()
+        r = requests.post(
+            f"{self.API_BASE}/chat/completions",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"model": self.model, "messages": messages},
+            timeout=self.timeout,
+        )
+        r.raise_for_status()
+        data = r.json()
+        try:
+            usage = data.get("usage", {})
+            if usage:
+                self._track_usage(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+        except (AttributeError, TypeError):
+            pass
+        return data["choices"][0]["message"]["content"]
+
+    def chat_with_tools(self, messages: list[dict], tools: list[dict] = None, **kwargs) -> dict:
+        import requests
+        token = self._get_access_token()
+        params = {"model": self.model, "messages": messages}
+        if tools:
+            params["tools"] = tools
+        r = requests.post(
+            f"{self.API_BASE}/chat/completions",
+            headers={"Authorization": f"Bearer {token}"},
+            json=params, timeout=self.timeout,
+        )
+        r.raise_for_status()
+        data = r.json()
+        msg = data["choices"][0]["message"]
+        tool_calls = []
+        if msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                try:
+                    args = json.loads(tc["function"]["arguments"])
+                except (json.JSONDecodeError, TypeError, KeyError):
+                    args = {}
+                tool_calls.append({"name": tc["function"]["name"], "args": args})
+        return {"text": msg.get("content", ""), "tool_calls": tool_calls}
+
+    def validate(self) -> tuple[bool, str]:
+        return True, ""  # No API key needed
+
+
+# ── GitHub Copilot (subscription OAuth) ──────────────────────
+
+@register_provider("copilot")
+class CopilotProvider(BaseProvider):
+    """GitHub Copilot — uses your Copilot subscription via device code OAuth.
+
+    No API key needed. Authenticates through GitHub device code flow.
+    Requires active GitHub Copilot subscription.
+    """
+    LABEL = "GitHub Copilot (Subscription)"
+    NEEDS_API_KEY = False
+    SUPPORTS_TOOLS = True
+    DEFAULT_MODEL = "gpt-4o"
+    MODEL_HELP = "e.g. gpt-4o, claude-sonnet-4 (models available depend on your Copilot plan)"
+
+    GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98"
+    DEVICE_CODE_URL = "https://github.com/login/device/code"
+    TOKEN_URL = "https://github.com/login/oauth/access_token"
+    COPILOT_TOKEN_URL = "https://api.github.com/copilot_internal/v2/token"
+    API_BASE = "https://api.githubcopilot.com"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._token_file = None
+
+    def _get_token_file(self):
+        if self._token_file is None:
+            import os
+            self._token_file = os.path.join(os.path.expanduser("~/.permafrost"), "copilot-oauth-token.json")
+        return self._token_file
+
+    def _load_token(self) -> dict:
+        import os
+        tf = self._get_token_file()
+        if os.path.exists(tf):
+            try:
+                return json.loads(open(tf, "r", encoding="utf-8").read())
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    def _save_token(self, data: dict):
+        with open(self._get_token_file(), "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+    def _get_copilot_token(self) -> str:
+        """Get Copilot API token (GitHub OAuth -> Copilot token exchange)."""
+        import time as _time, requests
+        token = self._load_token()
+
+        # Check copilot token validity
+        if token.get("copilot_token"):
+            if _time.time() < token.get("copilot_expires_at", 0) - 60:
+                return token["copilot_token"]
+
+        # Need GitHub OAuth token first
+        gh_token = token.get("github_token")
+        if not gh_token:
+            gh_token = self._github_device_flow()
+            token["github_token"] = gh_token
+            self._save_token(token)
+
+        # Exchange for Copilot token
+        r = requests.get(self.COPILOT_TOKEN_URL, headers={
+            "Authorization": f"token {gh_token}",
+            "Accept": "application/json",
+        }, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        token["copilot_token"] = data.get("token", "")
+        token["copilot_expires_at"] = data.get("expires_at", _time.time() + 1800)
+        self._save_token(token)
+        return token["copilot_token"]
+
+    def _github_device_flow(self) -> str:
+        """GitHub device code OAuth flow."""
+        import requests, time as _time
+
+        r = requests.post(self.DEVICE_CODE_URL, data={
+            "client_id": self.GITHUB_CLIENT_ID,
+            "scope": "read:user",
+        }, headers={"Accept": "application/json"}, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+
+        device_code = data["device_code"]
+        user_code = data["user_code"]
+        verification_uri = data["verification_uri"]
+        interval = data.get("interval", 5)
+
+        log.info(f"GitHub Copilot: Visit {verification_uri} and enter code: {user_code}")
+
+        try:
+            from core.scheduler import PFScheduler
+            PFScheduler().notify_user(
+                f"GitHub Copilot Login!\nVisit: {verification_uri}\nCode: {user_code}"
+            )
+        except Exception:
+            pass
+
+        for _ in range(60):
+            _time.sleep(interval)
+            r = requests.post(self.TOKEN_URL, data={
+                "client_id": self.GITHUB_CLIENT_ID,
+                "device_code": device_code,
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            }, headers={"Accept": "application/json"}, timeout=10)
+            data = r.json()
+            if "access_token" in data:
+                log.info("GitHub OAuth: Login successful!")
+                return data["access_token"]
+            if data.get("error") == "authorization_pending":
+                continue
+            if data.get("error") in ("slow_down", ""):
+                _time.sleep(5)
+                continue
+            raise RuntimeError(f"GitHub OAuth error: {data.get('error_description', data.get('error'))}")
+
+        raise RuntimeError("GitHub OAuth: Login timed out.")
+
+    def chat(self, messages: list[dict], **kwargs) -> str:
+        return self._retry(self._do_chat, messages, **kwargs)
+
+    def _do_chat(self, messages: list[dict], **kwargs) -> str:
+        import requests
+        token = self._get_copilot_token()
+        r = requests.post(
+            f"{self.API_BASE}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Editor-Version": "Permafrost/0.8.0",
+            },
+            json={"model": self.model, "messages": messages},
+            timeout=self.timeout,
+        )
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+
+    def chat_with_tools(self, messages: list[dict], tools: list[dict] = None, **kwargs) -> dict:
+        import requests
+        token = self._get_copilot_token()
+        params = {"model": self.model, "messages": messages}
+        if tools:
+            params["tools"] = tools
+        r = requests.post(
+            f"{self.API_BASE}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Editor-Version": "Permafrost/0.8.0",
+            },
+            json=params, timeout=self.timeout,
+        )
+        r.raise_for_status()
+        data = r.json()
+        msg = data["choices"][0]["message"]
+        tool_calls = []
+        if msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                try:
+                    args = json.loads(tc["function"]["arguments"])
+                except (json.JSONDecodeError, TypeError, KeyError):
+                    args = {}
+                tool_calls.append({"name": tc["function"]["name"], "args": args})
+        return {"text": msg.get("content", ""), "tool_calls": tool_calls}
+
+    def validate(self) -> tuple[bool, str]:
+        return True, ""
+
+
 # ── Echo (Free Testing) ──────────────────────────────────────
 
 @register_provider("echo")
