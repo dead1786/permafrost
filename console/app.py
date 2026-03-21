@@ -273,13 +273,21 @@ elif page == "chat":
     if "messages" not in st.session_state:
         if chat_file.exists():
             try:
-                loaded = json.loads(chat_file.read_text(encoding="utf-8"))[-50:]
-                # Filter out error messages from history
+                raw = chat_file.read_bytes()
+                for enc in ("utf-8-sig", "utf-8", "utf-16", "latin-1"):
+                    try:
+                        text = raw.decode(enc)
+                        break
+                    except (UnicodeDecodeError, ValueError):
+                        continue
+                else:
+                    text = "[]"
+                loaded = json.loads(text)[-50:]
                 st.session_state.messages = [
                     m for m in loaded
                     if not (m.get("role") == "assistant" and m.get("content", "").startswith("[error]"))
                 ]
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, TypeError):
                 st.session_state.messages = []
         else:
             st.session_state.messages = []
