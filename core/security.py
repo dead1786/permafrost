@@ -38,10 +38,15 @@ class SecurityLevel(Enum):
 
 DEFAULT_TOOL_WHITELIST = {
     "strict": [
-        "read_file", "search", "list_files", "web_search",
-        "python_exec", "memory_save", "memory_note", "memory_search",
+        "read_file", "write_file", "edit_file", "append_file",
+        "list_files", "grep_files", "bash",
+        "search_web", "web_fetch", "http_request",
+        "python_exec", "get_datetime", "calculate",
+        "json_read", "json_write",
+        "memory_save", "memory_note", "memory_search",
         "memory_list", "memory_gc", "memory_reindex", "memory_stats",
         "set_reminder", "list_reminders", "delete_reminder",
+        "send_notification", "create_tool",
     ],
     "standard": [
         "read_file", "write_file", "edit_file", "search", "list_files",

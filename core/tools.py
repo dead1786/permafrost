@@ -259,6 +259,226 @@ def tool_edit_file(path: str, old_text: str, new_text: str, **kwargs) -> str:
         return f"[error] {e}"
 
 
+# ── Utility Tools ─────────────────────────────────────────────
+
+@register_tool("get_datetime", "Get current date, time, and timezone info", {})
+def tool_get_datetime(**kwargs) -> str:
+    from datetime import datetime
+    now = datetime.now()
+    return f"Date: {now.strftime('%Y-%m-%d')}\nTime: {now.strftime('%H:%M:%S')}\nDay: {now.strftime('%A')}\nTimestamp: {now.isoformat()}"
+
+
+@register_tool("calculate", "Evaluate a math expression safely", {
+    "expression": {"type": "string", "description": "Math expression (e.g. '2**10', 'sqrt(144)', '3.14*5**2')"},
+})
+def tool_calculate(expression: str, **kwargs) -> str:
+    import math
+    allowed = {
+        "abs": abs, "round": round, "min": min, "max": max,
+        "sum": sum, "len": len, "int": int, "float": float,
+        "sqrt": math.sqrt, "ceil": math.ceil, "floor": math.floor,
+        "log": math.log, "log10": math.log10, "log2": math.log2,
+        "sin": math.sin, "cos": math.cos, "tan": math.tan,
+        "pi": math.pi, "e": math.e, "pow": pow,
+    }
+    try:
+        result = eval(expression, {"__builtins__": {}}, allowed)
+        return str(result)
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("http_request", "Make an HTTP request (GET/POST)", {
+    "url": {"type": "string", "description": "URL to request"},
+    "method": {"type": "string", "description": "GET or POST (default: GET)"},
+    "body": {"type": "string", "description": "POST body (JSON string, optional)"},
+    "headers": {"type": "string", "description": "JSON string of headers (optional)"},
+})
+def tool_http_request(url: str, method: str = "GET", body: str = "", headers: str = "", **kwargs) -> str:
+    import requests
+    try:
+        h = json.loads(headers) if headers else {}
+        h.setdefault("User-Agent", "Permafrost/1.0")
+        if method.upper() == "POST":
+            data = json.loads(body) if body else {}
+            r = requests.post(url, json=data, headers=h, timeout=15)
+        else:
+            r = requests.get(url, headers=h, timeout=15)
+        return f"Status: {r.status_code}\n{r.text[:3000]}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("json_read", "Read and parse a JSON file", {
+    "path": {"type": "string", "description": "Path to JSON file"},
+    "key": {"type": "string", "description": "Optional dot-notation key to extract (e.g. 'data.items')"},
+})
+def tool_json_read(path: str, key: str = "", **kwargs) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if key:
+            for k in key.split("."):
+                if isinstance(data, dict):
+                    data = data.get(k, f"[key '{k}' not found]")
+                elif isinstance(data, list) and k.isdigit():
+                    data = data[int(k)]
+                else:
+                    return f"[error] Cannot navigate '{k}' in {type(data).__name__}"
+        return json.dumps(data, ensure_ascii=False, indent=2)[:4000]
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("json_write", "Write data to a JSON file", {
+    "path": {"type": "string", "description": "Path to JSON file"},
+    "data": {"type": "string", "description": "JSON string to write"},
+})
+def tool_json_write(path: str, data: str, **kwargs) -> str:
+    try:
+        parsed = json.loads(data)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(parsed, f, ensure_ascii=False, indent=2)
+        return f"Written JSON to {path}"
+    except json.JSONDecodeError as e:
+        return f"[error] Invalid JSON: {e}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("send_notification", "Send a message to the user through all enabled channels", {
+    "message": {"type": "string", "description": "Message to send"},
+})
+def tool_send_notification(message: str, **kwargs) -> str:
+    try:
+        from core.scheduler import PFScheduler
+        sched = PFScheduler()
+        sched.notify_user(message)
+        return f"Notification sent: {message[:100]}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("append_file", "Append text to the end of a file", {
+    "path": {"type": "string", "description": "File path"},
+    "content": {"type": "string", "description": "Content to append"},
+})
+def tool_append_file(path: str, content: str, **kwargs) -> str:
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(content)
+        return f"Appended {len(content)} chars to {path}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
+@register_tool("grep_files", "Search for a pattern in files (recursive)", {
+    "pattern": {"type": "string", "description": "Text or regex pattern to search"},
+    "path": {"type": "string", "description": "Directory to search (default: current dir)"},
+    "file_pattern": {"type": "string", "description": "File glob pattern (e.g. '*.py', '*.md')"},
+})
+def tool_grep_files(pattern: str, path: str = ".", file_pattern: str = "*", **kwargs) -> str:
+    import glob
+    try:
+        matches = []
+        for filepath in glob.glob(os.path.join(path, "**", file_pattern), recursive=True):
+            if os.path.isfile(filepath):
+                try:
+                    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                        for i, line in enumerate(f, 1):
+                            if pattern.lower() in line.lower():
+                                matches.append(f"{filepath}:{i}: {line.strip()[:100]}")
+                                if len(matches) >= 20:
+                                    return "\n".join(matches) + "\n... (truncated)"
+                except (OSError, UnicodeDecodeError):
+                    pass
+        return "\n".join(matches) if matches else "No matches found."
+    except Exception as e:
+        return f"[error] {e}"
+
+
+# ── Self-Tool-Creation (Meta-Tool) ───────────────────────────
+
+@register_tool("create_tool", "Create a new custom tool that persists across restarts", {
+    "name": {"type": "string", "description": "Tool name (snake_case, e.g. 'weather_check')"},
+    "description": {"type": "string", "description": "What the tool does"},
+    "parameters": {"type": "string", "description": "JSON string of parameters, e.g. '{\"city\": {\"type\": \"string\", \"description\": \"City name\"}}'"},
+    "code": {"type": "string", "description": "Python function body (receives kwargs matching parameters, must return a string)"},
+})
+def tool_create_tool(name: str, description: str, parameters: str, code: str, **kwargs) -> str:
+    """Create a custom tool and register it to the auto_tools plugin directory.
+
+    The tool is immediately available and persists across brain restarts.
+    """
+    from pathlib import Path
+
+    # Validate name
+    if not re.match(r'^[a-z][a-z0-9_]*$', name):
+        return f"[error] Tool name must be snake_case (e.g. 'my_tool'), got '{name}'"
+
+    if name in TOOLS:
+        return f"[error] Tool '{name}' already exists. Use a different name."
+
+    # Validate parameters JSON
+    try:
+        params = json.loads(parameters)
+        if not isinstance(params, dict):
+            return "[error] Parameters must be a JSON object"
+    except json.JSONDecodeError as e:
+        return f"[error] Invalid parameters JSON: {e}"
+
+    # Build the tool file
+    data_dir = Path(os.path.expanduser("~/.permafrost"))
+    tools_dir = data_dir / "plugins" / "auto_tools"
+    tools_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create plugin manifest if not exists
+    manifest = tools_dir / "plugin.json"
+    if not manifest.exists():
+        manifest.write_text(json.dumps({
+            "name": "auto_tools",
+            "version": "1.0.0",
+            "description": "Auto-generated tools created by AI",
+            "author": "Permafrost AI",
+        }, indent=2), encoding="utf-8")
+
+    # Write the tool file
+    tool_file = tools_dir / f"{name}.py"
+    param_names = list(params.keys())
+    func_params = ", ".join([f"{p}=None" for p in param_names]) + (", **kwargs" if param_names else "**kwargs")
+
+    tool_code = f'''"""Auto-generated tool: {name}"""
+import json, os, re, subprocess
+from core.tools import register_tool
+
+@register_tool("{name}", """{description}""", {json.dumps(params, ensure_ascii=False)})
+def tool_{name}({func_params}):
+{chr(10).join("    " + line for line in code.strip().split(chr(10)))}
+'''
+
+    tool_file.write_text(tool_code, encoding="utf-8")
+
+    # Update __init__.py to import all tool files
+    init_file = tools_dir / "__init__.py"
+    imports = []
+    for f in tools_dir.glob("*.py"):
+        if f.name != "__init__.py":
+            imports.append(f"from . import {f.stem}")
+    init_file.write_text("\n".join(imports) + "\n", encoding="utf-8")
+
+    # Immediately register the tool in current session
+    try:
+        exec(f"from core.tools import register_tool\n"
+             f"@register_tool('{name}', '''{description}''', {json.dumps(params)})\n"
+             f"def tool_{name}({func_params}):\n"
+             + "\n".join(f"    {line}" for line in code.strip().split("\n")),
+             {"register_tool": register_tool, "json": json, "os": os, "re": re, "subprocess": subprocess})
+        return f"Tool '{name}' created and registered! ({len(params)} params). File: {tool_file}"
+    except Exception as e:
+        return f"Tool file created at {tool_file}, but live registration failed: {e}. It will load on next restart."
+
+
 # ── Memory Tools (L1-L6 layered system) ──────────────────────
 
 @register_tool("memory_save", "Save information to L2 verified knowledge (long-term)", {
