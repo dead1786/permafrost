@@ -7,7 +7,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.10%2B-green.svg" alt="Python"></a>
-  <a href="tests/"><img src="https://img.shields.io/badge/Tests-76%20passed-brightgreen.svg" alt="Tests"></a>
+  <a href="tests/"><img src="https://img.shields.io/badge/Tests-113%20passed-brightgreen.svg" alt="Tests"></a>
 </p>
 
 > Turn any AI into a persistent, self-improving companion that remembers everything, uses tools, and never sleeps.
@@ -47,6 +47,7 @@ A browser opens. Pick your AI model (8 providers work without API keys), connect
 | **6-Layer Security** | Tool whitelist, file ACL, injection detection, rate limiting, approval system, audit log |
 | **Multi-Channel** | Telegram, Discord, LINE, Web Chat — one brain, many interfaces |
 | **Smart Scheduler** | Cron + one-shot + interval tasks with ack-based completion tracking |
+| **Provider Fallback Chain** | Automatic failover between AI providers with error classification and cooldown probing |
 | **Multi-Agent** | Spawn independent sub-agents with isolated memory + stall detection |
 | **Night Silence** | Queue non-urgent notifications during sleep hours |
 
@@ -66,6 +67,7 @@ permafrost/
 │   ├── security.py       # 6-layer security (whitelist/ACL/injection/rate/approval/audit)
 │   ├── scheduler.py      # Cron-like task engine with ack tracking
 │   ├── watchdog.py       # Self-healing daemon monitor
+│   ├── provider_fallback.py # Provider fallback chain with error classification
 │   ├── guard.py          # Context overflow protection
 │   └── notifier.py       # Unified notification routing
 ├── channels/
@@ -82,7 +84,7 @@ permafrost/
 │   ├── rules_template.py # L1 rules with tool reference (58 tools documented)
 │   └── evolution.py      # Self-improvement engine
 ├── plugins/              # Auto-discovered plugin directory
-├── tests/                # 76 automated tests (tools/vector/memory/providers/security)
+├── tests/                # 113 automated tests (tools/vector/memory/providers/security/fallback)
 ├── launcher.py           # Unified daemon launcher
 └── start.bat / start.sh  # One-click launchers
 ```
@@ -176,6 +178,7 @@ class PFSlack(BaseChannel):
 - 64 built-in tools with native function calling
 - L1-L6 memory system with hybrid vector search
 - AI context compaction (not blind truncation)
+- Provider fallback chain with error classification and cooldown probing
 - Background agents with stall detection
 - Plugin system + MCP client
 - AI self-evolution (modify rules, create tools)
@@ -187,7 +190,6 @@ class PFSlack(BaseChannel):
 - React/Next.js frontend (replace Streamlit)
 - Voice input/output
 - Plugin marketplace
-- Provider fallback chain with cooldown probing
 - Multi-stage compaction pipeline
 - Mobile app
 

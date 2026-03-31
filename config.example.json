@@ -15,5 +15,11 @@
   "discord_token": "",
   "discord_channel_id": "",
   "discord_allowed_users": "",
-  "security_level": "standard"
+  "security_level": "standard",
+  "fallback_chain": [
+    {"provider": "claude", "api_key": "sk-ant-xxx", "model": "claude-sonnet-4-20250514"},
+    {"provider": "openai", "api_key": "sk-xxx", "model": "gpt-4o"},
+    {"provider": "ollama", "model": "llama3"}
+  ],
+  "fallback_cooldown": 300
 }

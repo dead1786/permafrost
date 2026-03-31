@@ -27,6 +27,7 @@ from pathlib import Path
 
 from .hooks import HookManager
 from .providers import create_provider, BaseProvider
+from .provider_fallback import create_fallback_chain
 from .tools import execute_tool, get_tool_prompt, get_tools_schema, parse_tool_calls, strip_tool_calls, has_tool_calls, normalize_tool_calls
 from .compactor import PFCompactor
 from .agents import PFAgentManager, agent_memory_maintenance, agent_context_extractor, agent_health_check
@@ -84,6 +85,8 @@ class PFBrain:
 
         # AI provider (lazy init)
         self._provider: BaseProvider | None = None
+        # Fallback chain (optional, created from config)
+        self._fallback_chain = create_fallback_chain(self.config)
 
         # Conversation history for context
         self._conversation: list[dict] = []
@@ -272,6 +275,19 @@ class PFBrain:
             if not ok:
                 log.warning(f"provider validation: {err}")
         return self._provider
+
+    def _chat(self, messages: list[dict], **kwargs) -> str:
+        """Route chat through fallback chain (if configured) or direct provider."""
+        if self._fallback_chain:
+            return self._fallback_chain.chat(messages, **kwargs)
+        return self.provider.chat(messages, **kwargs)
+
+    def _chat_with_tools(self, messages: list[dict], tools: list[dict] = None,
+                         **kwargs) -> dict:
+        """Route chat_with_tools through fallback chain or direct provider."""
+        if self._fallback_chain:
+            return self._fallback_chain.chat_with_tools(messages, tools=tools, **kwargs)
+        return self.provider.chat_with_tools(messages, tools=tools, **kwargs)
 
     def register_channel(self, name: str, inbox_path: str, handler=None):
         """Register a channel's inbox file and optional reply handler."""
@@ -500,9 +516,13 @@ class PFBrain:
             msgs.insert(-1, {"role": "system", "content": hook_result.system_message})
 
         # ── Determine tool calling mode ─────────────────────────────
-        use_native_tools = (tools_enabled and
-                           hasattr(self.provider, 'SUPPORTS_TOOLS') and
-                           self.provider.SUPPORTS_TOOLS)
+        # Check active provider for native tool support (fallback chain or direct)
+        if self._fallback_chain:
+            _supports_tools = self._fallback_chain.supports_tools
+        else:
+            _supports_tools = (hasattr(self.provider, 'SUPPORTS_TOOLS') and
+                              self.provider.SUPPORTS_TOOLS)
+        use_native_tools = tools_enabled and _supports_tools
 
         if use_native_tools:
             # ── Native function calling (Claude/GPT/Gemini) ──────
@@ -512,7 +532,7 @@ class PFBrain:
             round_count = 0
 
             try:
-                result = self.provider.chat_with_tools(msgs, tools=tool_schemas)
+                result = self._chat_with_tools(msgs, tools=tool_schemas)
             except Exception as e:
                 log.error(f"AI provider error: {e}")
                 self.hooks.emit("on_error", {"error": str(e), "channel": channel})
@@ -539,7 +559,7 @@ class PFBrain:
 
                 # Call AI again with results
                 try:
-                    result = self.provider.chat_with_tools(msgs, tools=tool_schemas)
+                    result = self._chat_with_tools(msgs, tools=tool_schemas)
                 except Exception as e:
                     log.error(f"AI provider error (tool round {round_count}): {e}")
                     response = f"[error] AI failed during tool use: {e}"
@@ -556,7 +576,7 @@ class PFBrain:
         else:
             # ── Fallback: prompt injection (Ollama/Echo/etc.) ────
             try:
-                response = self.provider.chat(msgs)
+                response = self._chat(msgs)
             except Exception as e:
                 log.error(f"AI provider error: {e}")
                 self.hooks.emit("on_error", {"error": str(e), "channel": channel})
@@ -593,7 +613,7 @@ class PFBrain:
                     msgs.append({"role": "user", "content": results_text})
 
                     try:
-                        response = self.provider.chat(msgs)
+                        response = self._chat(msgs)
                         response = normalize_tool_calls(response)
                     except Exception as e:
                         log.error(f"AI provider error (fallback round {round_count}): {e}")

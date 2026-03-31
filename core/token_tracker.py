@@ -23,16 +23,20 @@ USAGE_FILE = DATA_DIR / "token-usage.json"
 _lock = Lock()
 
 # ── Cost table (USD per 1M tokens) ──────────────────────────────
-# Updated pricing as of 2025-06. Extend as needed.
+# Updated pricing as of 2026-03. Extend as needed.
 COST_PER_1M: dict[str, tuple[float, float]] = {
     # (prompt_cost, completion_cost) per 1M tokens
     # Anthropic
     "claude-opus-4-20250514":      (15.0,  75.0),
     "claude-sonnet-4-20250514":    (3.0,   15.0),
-    "claude-3-5-haiku-20241022":   (0.8,   4.0),
+    "claude-haiku-4-5-20251001":   (0.8,   4.0),
+    "claude-3-5-haiku-20241022":   (0.8,   4.0),  # Legacy alias
     # OpenAI
     "gpt-4o":                      (2.5,   10.0),
     "gpt-4o-mini":                 (0.15,  0.6),
+    "gpt-4.1":                     (2.0,   8.0),
+    "gpt-4.1-mini":                (0.4,   1.6),
+    "gpt-4.1-nano":                (0.1,   0.4),
     "o3-mini":                     (1.1,   4.4),
     # Google
     "gemini-2.0-flash":            (0.075, 0.3),
@@ -43,6 +47,7 @@ COST_PER_1M: dict[str, tuple[float, float]] = {
     "anthropic/claude-sonnet-4":   (3.0,   15.0),
     "anthropic/claude-opus-4":     (15.0,  75.0),
     "openai/gpt-4o":               (2.5,   10.0),
+    "openai/gpt-4.1":              (2.0,   8.0),
     "google/gemini-2.0-flash":     (0.075, 0.3),
     "google/gemini-2.5-flash":     (0.15,  0.6),
 }

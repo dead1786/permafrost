@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.9.0 (2026-03-31)
+
+### Added
+- **Provider Fallback Chain** (`core/provider_fallback.py`): Automatic failover between AI providers when primary fails. Uses 9-type error classification (rate limit, auth, billing, overloaded, etc.) to make intelligent failover decisions. Features:
+  - Ordered chain of providers tried in sequence
+  - Exponential cooldown with automatic recovery probing
+  - Permanent disable for revoked keys / missing models
+  - Context overflow errors raised immediately (no pointless failover)
+  - Status reporting and manual reset
+  - Integrated into Brain via `_chat()` / `_chat_with_tools()` helper methods
+- **37 new tests** for provider fallback chain (error classification, failover, cooldown recovery, tools, status, reset, edge cases)
+
+### Changed
+- Brain now routes all AI calls through fallback chain when `fallback_chain` is configured in config.json
+- `core/__init__.py` now exports both `get_tool_schemas` (OpenAI format) and `get_tools_schema` (multi-provider format)
+- Token tracker pricing updated for GPT-4.1 family, Claude Haiku 4.5, and OpenRouter variants
+- Python version requirement corrected to `>=3.10` in pyproject.toml (was `>=3.11`, code uses 3.10 union syntax)
+- Config example updated with `fallback_chain` and `fallback_cooldown` fields
+- Test badge updated: 76 -> 113 tests
+
+### Fixed
+- `get_tools_schema()` (multi-provider version) was not exported from `core/__init__.py`
+- Token tracker missing pricing for `claude-haiku-4-5-20251001`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`
+
 ## v0.8.0 (2026-03-21)
 
 ### Added
