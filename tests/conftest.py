@@ -7,8 +7,9 @@ import sys
 
 import pytest
 
-# Ensure project root is on path
+# Ensure project root and tests/ are on path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 @pytest.fixture

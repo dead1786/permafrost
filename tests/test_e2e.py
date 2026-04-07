@@ -164,10 +164,14 @@ class TestE2EMessageRoundTrip(unittest.TestCase):
             for msg in unread:
                 self.brain._process_message(ch, msg)
 
-        # Check that provider received source tag
+        # Check that provider received channel context (now in a system message)
         last_call = self.mock_provider.calls[0]
+        system_msgs = [m for m in last_call if m["role"] == "system"]
+        channel_ctx = any("telegram" in m["content"] for m in system_msgs)
+        self.assertTrue(channel_ctx, "Expected telegram channel context in a system message")
+        # User message should be clean text only
         user_msg = [m for m in last_call if m["role"] == "user"][-1]
-        self.assertIn("[source:telegram]", user_msg["content"])
+        self.assertEqual(user_msg["content"], "test")
 
 
 class TestE2EWithSecurity(unittest.TestCase):

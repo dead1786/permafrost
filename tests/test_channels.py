@@ -51,10 +51,11 @@ class TestTelegramValidation(unittest.TestCase):
         self.assertIn("Token", err)
 
     def test_missing_chat_id(self):
+        # chat_id is optional — auto-detected on first message
         tg = PFTelegram(config={"telegram_token": "bot123:abc"})
         ok, err = tg.validate()
-        self.assertFalse(ok)
-        self.assertIn("Chat ID", err)
+        self.assertTrue(ok)
+        self.assertEqual(err, "")
 
     def test_name(self):
         tg = PFTelegram(config={"telegram_token": "t", "telegram_chat_id": "c"})

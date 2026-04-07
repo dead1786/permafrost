@@ -185,8 +185,13 @@ class TestMessageBuilding(unittest.TestCase):
 
     def test_includes_source_tag(self):
         msgs = self.brain._build_messages("discord", "hello")
+        # Channel context is injected as a system message (not in user content)
+        system_msgs = [m for m in msgs if m["role"] == "system"]
+        channel_ctx = any("discord" in m["content"] for m in system_msgs)
+        self.assertTrue(channel_ctx, "Expected channel context in a system message")
+        # User message should be clean
         last = msgs[-1]
-        self.assertIn("[source:discord]", last["content"])
+        self.assertEqual(last["content"], "hello")
 
     def test_includes_conversation_history(self):
         self.brain._conversation = [
@@ -194,7 +199,8 @@ class TestMessageBuilding(unittest.TestCase):
             {"role": "assistant", "content": "response"},
         ]
         msgs = self.brain._build_messages("telegram", "new message")
-        self.assertEqual(len(msgs), 4)  # system + 2 history + new
+        # system(prompt) + 2 history + system(channel context) + user = 5
+        self.assertEqual(len(msgs), 5)
 
 
 class TestConversationPersistence(unittest.TestCase):
