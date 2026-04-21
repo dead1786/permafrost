@@ -10,3 +10,10 @@ build/
 .venv/
 venv/
 node_modules/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
