@@ -7,7 +7,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.10%2B-green.svg" alt="Python"></a>
-  <a href="tests/"><img src="https://img.shields.io/badge/Tests-113%20passed-brightgreen.svg" alt="Tests"></a>
+  <a href="tests/"><img src="https://img.shields.io/badge/Tests-317%20passed-brightgreen.svg" alt="Tests"></a>
 </p>
 
 > Turn any AI into a persistent, self-improving companion that remembers everything, uses tools, and never sleeps.
@@ -84,7 +84,7 @@ permafrost/
 │   ├── rules_template.py # L1 rules with tool reference (58 tools documented)
 │   └── evolution.py      # Self-improvement engine
 ├── plugins/              # Auto-discovered plugin directory
-├── tests/                # 113 automated tests (tools/vector/memory/providers/security/fallback)
+├── tests/                # 317 automated tests (tools/vector/memory/providers/security/fallback/guard/token_tracker)
 ├── launcher.py           # Unified daemon launcher
 └── start.bat / start.sh  # One-click launchers
 ```
