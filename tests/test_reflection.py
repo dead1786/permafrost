@@ -213,6 +213,20 @@ class TestAnalyzeTrends:
         result = reflection.analyze_trends(days=7)
         assert result["score_trend"] == "stable"
 
+    def test_unparseable_score_is_skipped(self, reflection):
+        # score overall 無法轉成 float 時應靜默跳過，不拋例外
+        write_reflection(reflection, day_offset=0, score={"overall": "n/a"})
+        write_reflection(reflection, day_offset=1, score={"overall": "8/10"})
+        result = reflection.analyze_trends(days=7)
+        # 只有一筆合法分數，avg_score 應等於 8.0
+        assert result["avg_score"] == pytest.approx(8.0)
+
+    def test_score_with_no_slash_is_skipped(self, reflection):
+        # "good" 沒有 "/" 分隔，float("good") 會 ValueError，應靜默跳過
+        write_reflection(reflection, day_offset=0, score={"overall": "good"})
+        result = reflection.analyze_trends(days=7)
+        assert result["avg_score"] is None
+
 
 class TestGetFollowUpItems:
     def test_empty_when_no_reflections(self, reflection):

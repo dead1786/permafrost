@@ -186,6 +186,13 @@ class TestTriggerCheckpoint(unittest.TestCase):
         self.guard._trigger_checkpoint("normal")
         self.assertGreaterEqual(self.guard.last_trigger, before)
 
+    def test_oserror_on_trigger_file_does_not_raise(self):
+        # 把 checkpoint-trigger.json 位置替換成同名目錄，觸發 OSError path
+        trigger_path = Path(self.tmp) / "checkpoint-trigger.json"
+        trigger_path.mkdir(parents=True, exist_ok=True)
+        # 應靜默 return，不拋例外
+        self.guard._trigger_checkpoint("normal")
+
 
 class TestCheck(unittest.TestCase):
     """Test check() public method."""

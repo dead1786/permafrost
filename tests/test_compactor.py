@@ -258,3 +258,11 @@ class TestLogCompaction:
         c._log_compaction(8, 4, 150, 40)
         history = json.loads(c.history_file.read_text(encoding="utf-8"))
         assert len(history) == 2
+
+    def test_exception_during_write_does_not_raise(self, tmp_path):
+        # 模擬 history_file 指向一個不可寫的目錄路徑，觸發 Exception path
+        c = make_compactor(tmp_path)
+        # 先建立同名目錄取代檔案，write_text 會拋 OSError/IsADirectoryError
+        c.history_file.mkdir(parents=True, exist_ok=True)
+        # 不應拋例外（內部 except Exception 靜默處理）
+        c._log_compaction(5, 3, 100, 30)
