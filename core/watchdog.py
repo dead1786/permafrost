@@ -90,9 +90,9 @@ class PFWatchdog:
             if sys.platform == "win32":
                 r = subprocess.run(
                     ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                    capture_output=True, text=True, timeout=10
+                    capture_output=True, timeout=10
                 )
-                return str(pid) in r.stdout
+                return str(pid).encode() in r.stdout
             else:
                 os.kill(pid, 0)
                 return True
