@@ -325,10 +325,16 @@ class ProviderFallbackChain:
 
         Args:
             provider_name: Reset only this provider. If None, reset all.
+
+        Raises:
+            ValueError: If provider_name is given but doesn't match any
+                provider in the chain (e.g. typo or removed from config).
         """
+        found = False
         for entry in self._providers:
             if provider_name and entry["config"]["provider"] != provider_name:
                 continue
+            found = True
             entry["status"] = "ready"
             entry["fail_count"] = 0
             entry["cooldown_until"] = 0
@@ -340,6 +346,12 @@ class ProviderFallbackChain:
         if not provider_name:
             self._active_index = 0
             log.info("All providers reset to ready")
+        elif not found:
+            known = [e["config"]["provider"] for e in self._providers]
+            raise ValueError(
+                f"Provider '{provider_name}' not found in fallback chain. "
+                f"Known providers: {known}"
+            )
 
 
 def create_fallback_chain(config: dict) -> Optional[ProviderFallbackChain]:

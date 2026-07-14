@@ -356,6 +356,22 @@ class TestFallbackChainStatus:
         for s in chain.get_status():
             assert s["status"] == "ready"
 
+    def test_reset_unknown_provider_raises(self):
+        """Reset with a name that doesn't match any provider must raise,
+        not silently no-op (previously it would return without error or
+        effect, e.g. on a typo or a provider removed from config)."""
+        chain = _make_chain_with_mocks([
+            MockProvider(errors=[RuntimeError("503 overloaded")]),
+        ])
+        with pytest.raises(RuntimeError):
+            chain.chat([{"role": "user", "content": "hi"}])
+
+        with pytest.raises(ValueError, match="not found in fallback chain"):
+            chain.reset("does_not_exist")
+
+        # The real provider's failure state must remain untouched.
+        assert chain.get_status()[0]["status"] != "ready"
+
 
 # ── Tests: Factory Function ─────────────────────────────────────
 
