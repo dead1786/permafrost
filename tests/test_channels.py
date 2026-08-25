@@ -12,6 +12,7 @@ from conftest import make_temp_dir, cleanup_temp_dir, read_json
 from channels.base import BaseChannel, create_channel, list_channels
 from channels.telegram import PFTelegram
 from channels.discord import PFDiscord
+from channels.line import PFLine
 
 
 class TestChannelRegistry(unittest.TestCase):
@@ -280,6 +281,220 @@ class TestBaseChannelInbox(unittest.TestCase):
         self.tg.write_to_inbox("hello")
         wake_file = Path(self.tmp) / "brain-wake.trigger"
         self.assertTrue(wake_file.exists())
+
+
+class TestLineValidation(unittest.TestCase):
+    """Test LINE config validation."""
+
+    def test_missing_access_token(self):
+        line = PFLine(config={"line_access_token": ""})
+        ok, err = line.validate()
+        self.assertFalse(ok)
+        self.assertIn("Access Token", err)
+
+    def test_whitespace_only_token_rejected(self):
+        line = PFLine(config={"line_access_token": "   "})
+        ok, _ = line.validate()
+        self.assertFalse(ok)
+
+    def test_valid_with_cloudflare(self):
+        line = PFLine(config={"line_access_token": "tok"})
+        with patch("channels.line.HAS_CLOUDFLARE", True):
+            ok, err = line.validate()
+        self.assertTrue(ok)
+        self.assertEqual(err, "")
+
+    def test_no_tunnel_library(self):
+        line = PFLine(config={"line_access_token": "tok"})
+        with patch("channels.line.HAS_CLOUDFLARE", False), \
+             patch("channels.line.HAS_PYNGROK", False):
+            ok, err = line.validate()
+        self.assertFalse(ok)
+        self.assertIn("tunnel library", err)
+
+    def test_ngrok_without_authtoken(self):
+        line = PFLine(config={"line_access_token": "tok"})
+        with patch("channels.line.HAS_CLOUDFLARE", False), \
+             patch("channels.line.HAS_PYNGROK", True):
+            ok, err = line.validate()
+        self.assertFalse(ok)
+        self.assertIn("ngrok Auth Token", err)
+
+    def test_name(self):
+        self.assertEqual(PFLine(config={}).name, "line")
+
+    def test_default_webhook_port(self):
+        self.assertEqual(PFLine(config={}).webhook_port, 8504)
+
+    def test_custom_webhook_port_coerced_to_int(self):
+        line = PFLine(config={"line_webhook_port": "9001"})
+        self.assertEqual(line.webhook_port, 9001)
+
+    def test_auth_header_built_from_token(self):
+        line = PFLine(config={"line_access_token": " tok "})
+        self.assertEqual(line.access_token, "tok")
+        self.assertEqual(line.headers["Authorization"], "Bearer tok")
+
+
+class TestLinePush(unittest.TestCase):
+    """Test LINE push message delivery."""
+
+    def setUp(self):
+        self.line = PFLine(config={"line_access_token": "tok"})
+
+    def test_push_success(self):
+        with patch("channels.line.requests.post") as post:
+            post.return_value = MagicMock(ok=True)
+            self.assertTrue(self.line._push_message("U1", "hi"))
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["to"], "U1")
+        self.assertEqual(payload["messages"][0]["text"], "hi")
+
+    def test_push_http_error(self):
+        with patch("channels.line.requests.post") as post:
+            post.return_value = MagicMock(ok=False, status_code=400, text="bad")
+            self.assertFalse(self.line._push_message("U1", "hi"))
+
+    def test_push_request_exception(self):
+        import requests as _rq
+        with patch("channels.line.requests.post", side_effect=_rq.RequestException("boom")):
+            self.assertFalse(self.line._push_message("U1", "hi"))
+
+
+class TestLineSend(unittest.TestCase):
+    """Test LINE send_message routing between reply token and push."""
+
+    def setUp(self):
+        self.line = PFLine(config={"line_access_token": "tok"})
+
+    def test_reply_token_used_first(self):
+        with patch("channels.line.requests.post") as post:
+            post.return_value = MagicMock(ok=True)
+            self.assertTrue(self.line.send_message("hi", reply_token="R1"))
+        self.assertIn("/message/reply", post.call_args.args[0])
+
+    def test_falls_back_to_push_when_reply_fails(self):
+        with patch.object(self.line, "_push_message", return_value=True) as push, \
+             patch("channels.line.requests.post") as post:
+            post.return_value = MagicMock(ok=False, status_code=400, text="expired")
+            self.assertTrue(self.line.send_message("hi", reply_token="R1", user_id="U1"))
+        push.assert_called_once_with("U1", "hi")
+
+    def test_no_user_id_and_no_reply_token_fails(self):
+        self.assertFalse(self.line.send_message("hi"))
+
+    def test_push_used_when_no_reply_token(self):
+        with patch.object(self.line, "_push_message", return_value=True) as push:
+            self.assertTrue(self.line.send_message("hi", user_id="U1"))
+        push.assert_called_once_with("U1", "hi")
+
+    def test_long_message_chunked_at_5000(self):
+        text = "x" * 12000
+        with patch.object(self.line, "_push_message", return_value=True) as push, \
+             patch("channels.line.time.sleep"):
+            self.assertTrue(self.line.send_message(text, user_id="U1"))
+        self.assertEqual(push.call_count, 3)
+        self.assertEqual(len(push.call_args_list[0].args[1]), 5000)
+        self.assertEqual(len(push.call_args_list[2].args[1]), 2000)
+
+    def test_push_failure_aborts_remaining_chunks(self):
+        with patch.object(self.line, "_push_message", return_value=False) as push, \
+             patch("channels.line.time.sleep"):
+            self.assertFalse(self.line.send_message("y" * 12000, user_id="U1"))
+        self.assertEqual(push.call_count, 1)
+
+    def test_reply_handler_passes_token_and_user(self):
+        with patch.object(self.line, "send_message", return_value=True) as send:
+            self.line.reply_handler("resp", {"reply_token": "R1", "user_id": "U1"})
+        send.assert_called_once_with("resp", reply_token="R1", user_id="U1")
+
+    def test_reply_handler_without_original_message(self):
+        with patch.object(self.line, "send_message", return_value=True) as send:
+            self.line.reply_handler("resp")
+        send.assert_called_once_with("resp", reply_token="", user_id="")
+
+
+class TestLineWebhookEvent(unittest.TestCase):
+    """Test LINE webhook event parsing into the inbox."""
+
+    def setUp(self):
+        self.tmp = make_temp_dir()
+        self.line = PFLine(config={"line_access_token": "tok"}, data_dir=self.tmp)
+
+    def tearDown(self):
+        cleanup_temp_dir(self.tmp)
+
+    def _event(self, message, source=None, reply_token="R1"):
+        return {
+            "type": "message",
+            "replyToken": reply_token,
+            "message": message,
+            "source": source or {"type": "user", "userId": "U1"},
+        }
+
+    def test_text_message_written_to_inbox(self):
+        self.line.process_webhook_event(self._event({"type": "text", "text": "hello", "id": "M1"}))
+        inbox = read_json(str(self.line.inbox_file))
+        self.assertEqual(len(inbox), 1)
+        self.assertEqual(inbox[0]["text"], "hello")
+        self.assertEqual(inbox[0]["source"], "line")
+        self.assertEqual(inbox[0]["reply_token"], "R1")
+        self.assertEqual(inbox[0]["user_id"], "U1")
+        self.assertFalse(inbox[0]["read"])
+
+    def test_non_message_event_ignored(self):
+        self.line.process_webhook_event({"type": "follow", "source": {"userId": "U1"}})
+        self.assertFalse(Path(self.line.inbox_file).exists()
+                         and read_json(str(self.line.inbox_file)))
+
+    def test_empty_text_ignored(self):
+        self.line.process_webhook_event(self._event({"type": "text", "text": ""}))
+        self.assertFalse(Path(self.line.inbox_file).exists()
+                         and read_json(str(self.line.inbox_file)))
+
+    def test_image_message_placeholder(self):
+        self.line.process_webhook_event(self._event({"type": "image", "id": "IMG9"}))
+        self.assertEqual(read_json(str(self.line.inbox_file))[0]["text"], "[image:IMG9]")
+
+    def test_sticker_message_placeholder(self):
+        self.line.process_webhook_event(
+            self._event({"type": "sticker", "packageId": "P1", "stickerId": "S2"}))
+        self.assertEqual(read_json(str(self.line.inbox_file))[0]["text"], "[sticker:P1:S2]")
+
+    def test_video_message_placeholder(self):
+        self.line.process_webhook_event(self._event({"type": "video", "id": "V3"}))
+        self.assertEqual(read_json(str(self.line.inbox_file))[0]["text"], "[video:V3]")
+
+    def test_audio_message_placeholder(self):
+        self.line.process_webhook_event(self._event({"type": "audio", "id": "A4"}))
+        self.assertEqual(read_json(str(self.line.inbox_file))[0]["text"], "[audio:A4]")
+
+    def test_file_message_uses_filename(self):
+        self.line.process_webhook_event(self._event({"type": "file", "fileName": "report.pdf"}))
+        self.assertEqual(read_json(str(self.line.inbox_file))[0]["text"], "[file:report.pdf]")
+
+    def test_group_source_metadata(self):
+        self.line.process_webhook_event(self._event(
+            {"type": "text", "text": "yo", "id": "M2"},
+            source={"type": "group", "userId": "U1", "groupId": "G1"},
+        ))
+        entry = read_json(str(self.line.inbox_file))[0]
+        self.assertEqual(entry["chat_type"], "group")
+        self.assertEqual(entry["group_id"], "G1")
+        self.assertEqual(entry["room_id"], "")
+
+    def test_room_source_metadata(self):
+        self.line.process_webhook_event(self._event(
+            {"type": "text", "text": "yo", "id": "M3"},
+            source={"type": "room", "userId": "U1", "roomId": "RM1"},
+        ))
+        entry = read_json(str(self.line.inbox_file))[0]
+        self.assertEqual(entry["chat_type"], "room")
+        self.assertEqual(entry["room_id"], "RM1")
+
+    def test_message_id_recorded(self):
+        self.line.process_webhook_event(self._event({"type": "text", "text": "hi", "id": "MID7"}))
+        self.assertEqual(read_json(str(self.line.inbox_file))[0]["message_id"], "MID7")
 
 
 if __name__ == "__main__":
