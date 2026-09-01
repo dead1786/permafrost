@@ -27,14 +27,14 @@ dependencies = [
 [project.optional-dependencies]
 claude = ["anthropic>=0.40.0"]
 openai = ["openai>=1.50.0"]
-gemini = ["google-generativeai>=0.5.0"]
+gemini = ["google-generativeai>=0.8.0"]
 telegram = []
 discord = []
 console = ["streamlit>=1.30.0"]
 all = [
     "anthropic>=0.40.0",
     "openai>=1.50.0",
-    "google-generativeai>=0.5.0",
+    "google-generativeai>=0.8.0",
     "streamlit>=1.30.0",
 ]
 
