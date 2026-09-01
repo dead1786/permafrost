@@ -22,20 +22,33 @@ classifiers = [
 
 dependencies = [
     "requests>=2.31.0",
+    "pillow>=10.0.0",
+    "sentence-transformers>=2.2.0",
 ]
 
 [project.optional-dependencies]
 claude = ["anthropic>=0.40.0"]
 openai = ["openai>=1.50.0"]
 gemini = ["google-generativeai>=0.8.0"]
-telegram = []
+telegram = ["pycloudflared>=0.2.0"]
 discord = []
 console = ["streamlit>=1.30.0"]
+documents = [
+    "fpdf2>=2.7.0",
+    "python-docx>=1.0.0",
+    "openpyxl>=3.1.0",
+    "pypdf>=4.0.0",
+]
 all = [
     "anthropic>=0.40.0",
     "openai>=1.50.0",
     "google-generativeai>=0.8.0",
     "streamlit>=1.30.0",
+    "pycloudflared>=0.2.0",
+    "fpdf2>=2.7.0",
+    "python-docx>=1.0.0",
+    "openpyxl>=3.1.0",
+    "pypdf>=4.0.0",
 ]
 
 [project.scripts]
