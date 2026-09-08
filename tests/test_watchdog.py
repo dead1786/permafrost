@@ -280,6 +280,15 @@ class TestCheckAll:
             issues = wd.check_all()
         assert any("not alive" in i for i in issues)
 
+    def test_dead_pid_restart_failure_adds_failed_issue(self, wd, data_dir):
+        hb = Path(data_dir) / "deadpid2.hb"
+        write_heartbeat(hb, pid=99999999, age_seconds=5)
+        wd.register_service("brain", str(hb), ["python", "main.py"])
+        with mock.patch.object(wd, "_restart_service", return_value=False):
+            issues = wd.check_all()
+        assert any("not alive" in i for i in issues)
+        assert any("FAILED" in i for i in issues)
+
     def test_restart_failure_adds_second_issue(self, wd, data_dir):
         hb = Path(data_dir) / "missing2.hb"
         wd.register_service("brain", str(hb), ["python", "main.py"])
@@ -338,3 +347,82 @@ class TestRunOnce:
         with mock.patch.object(wd, "check_all", return_value=[]):
             wd.run_once()
         assert wd.log_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# TestLogEdgeCases — rotation-with-existing-file and write failure
+# ---------------------------------------------------------------------------
+
+class TestLogEdgeCases:
+    def test_log_rotation_replaces_existing_rotated_file(self, wd):
+        # Pre-create an old rotated log so the unlink() branch (line 66) runs.
+        wd.log_file.parent.mkdir(parents=True, exist_ok=True)
+        rotated = wd.log_file.with_suffix(".log.1")
+        rotated.write_text("old rotated content", encoding="utf-8")
+        wd.log_file.write_text("x" * 1_100_000, encoding="utf-8")
+
+        wd._log("trigger rotation again")
+
+        assert rotated.exists()
+        assert rotated.read_text(encoding="utf-8") != "old rotated content"
+
+    def test_log_swallows_oserror_on_write(self, wd):
+        wd.log_file.parent.mkdir(parents=True, exist_ok=True)
+        with mock.patch("builtins.open", side_effect=OSError("disk full")):
+            # Should not raise even though writing the log line fails.
+            wd._log("this will fail to persist")
+
+
+# ---------------------------------------------------------------------------
+# TestIsProcessAlivePosix — non-Windows branch of _is_process_alive
+# ---------------------------------------------------------------------------
+
+class TestIsProcessAlivePosix:
+    def test_posix_alive_process(self, wd):
+        with mock.patch("core.watchdog.sys.platform", "linux"), \
+             mock.patch("os.kill", return_value=None) as mock_kill:
+            assert wd._is_process_alive(1234) is True
+        mock_kill.assert_called_once_with(1234, 0)
+
+    def test_posix_dead_process_raises_oserror(self, wd):
+        with mock.patch("core.watchdog.sys.platform", "linux"), \
+             mock.patch("os.kill", side_effect=OSError("no such process")):
+            assert wd._is_process_alive(9999) is False
+
+
+# ---------------------------------------------------------------------------
+# TestRestartServicePosix — non-Windows branch of _restart_service
+# ---------------------------------------------------------------------------
+
+class TestRestartServicePosix:
+    def test_posix_restart_uses_start_new_session(self, wd):
+        with mock.patch("core.watchdog.sys.platform", "linux"), \
+             mock.patch("subprocess.Popen") as mock_popen, \
+             mock.patch("time.sleep"):
+            mock_popen.return_value = mock.MagicMock()
+            result = wd._restart_service("brain", ["python", "main.py"])
+        assert result is True
+        mock_popen.assert_called_once_with(["python", "main.py"], start_new_session=True)
+
+
+# ---------------------------------------------------------------------------
+# TestRun — the continuous monitoring loop
+# ---------------------------------------------------------------------------
+
+class TestRun:
+    def test_run_loops_until_keyboard_interrupt(self, wd):
+        call_count = {"n": 0}
+
+        def fake_sleep(_seconds):
+            call_count["n"] += 1
+            if call_count["n"] >= 2:
+                raise KeyboardInterrupt()
+
+        with mock.patch("core.watchdog.time.sleep", side_effect=fake_sleep), \
+             mock.patch.object(wd, "run_once", return_value=[]) as mock_run_once:
+            wd.run()  # should not raise — KeyboardInterrupt is caught
+
+        # First sleep(30) grace period + at least one loop sleep(check_interval)
+        assert call_count["n"] >= 2
+        assert mock_run_once.called
+        assert "watchdog stopped" in wd.log_file.read_text(encoding="utf-8")
