@@ -230,7 +230,16 @@ class PFTelegram(BaseChannel):
             while self.running:
                 updates = self._get_updates()
                 for update in updates:
-                    self._process_update(update)
+                    # One malformed update must not kill the whole polling
+                    # thread (nothing restarts it), so isolate each one.
+                    try:
+                        self._process_update(update)
+                    except Exception as e:
+                        log.error(f"failed to process update: {e}", exc_info=True)
+                        # Never re-fetch a poison update forever
+                        uid = update.get("update_id") if isinstance(update, dict) else None
+                        if isinstance(uid, int) and uid > self.last_update_id:
+                            self.last_update_id = uid
                 if not updates:
                     time.sleep(self.poll_interval)
         except KeyboardInterrupt:

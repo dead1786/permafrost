@@ -112,6 +112,29 @@ class PFDiscord(BaseChannel):
             log.debug(f"  user {author_id} not in allowed_users={self.allowed_users}")
         return allowed
 
+    def _process_message(self, msg: dict):
+        """Process a single Discord message (advances last_message_id first)."""
+        self.last_message_id = msg["id"]
+        author = msg.get("author", {})
+        is_bot = author.get("bot", False)
+        content = msg.get("content", "")
+        log.debug(f"msg id={msg['id']} author={author.get('username','?')} bot={is_bot} content_len={len(content)} content={content[:50]!r}")
+        if not self._is_authorized(msg):
+            log.debug("  -> skipped (not authorized)")
+            return
+        text = content
+        if text:
+            self.write_to_inbox(text, {
+                "source": "discord",
+                "user_id": author.get("id", ""),
+                "username": author.get("username", ""),
+                "chat_type": "guild" if msg.get("guild_id") else "dm",
+                "channel_id": msg.get("channel_id", ""),
+                "message_id": msg["id"],
+                "guild_id": msg.get("guild_id", ""),
+            })
+            log.info(f"received: {text[:80]}")
+
     def run(self):
         """Main polling loop."""
         ok, err = self.validate()
@@ -133,27 +156,12 @@ class PFDiscord(BaseChannel):
                 messages = self._get_messages()
                 # Discord returns newest first, reverse for chronological order
                 for msg in reversed(messages):
-                    self.last_message_id = msg["id"]
-                    author = msg.get("author", {})
-                    is_bot = author.get("bot", False)
-                    content = msg.get("content", "")
-                    log.debug(f"msg id={msg['id']} author={author.get('username','?')} bot={is_bot} content_len={len(content)} content={content[:50]!r}")
-                    if not self._is_authorized(msg):
-                        log.debug(f"  -> skipped (not authorized)")
-                        continue
-                    text = content
-                    if text:
-                        author = msg.get("author", {})
-                        self.write_to_inbox(text, {
-                            "source": "discord",
-                            "user_id": author.get("id", ""),
-                            "username": author.get("username", ""),
-                            "chat_type": "guild" if msg.get("guild_id") else "dm",
-                            "channel_id": msg.get("channel_id", ""),
-                            "message_id": msg["id"],
-                            "guild_id": msg.get("guild_id", ""),
-                        })
-                        log.info(f"received: {text[:80]}")
+                    # One malformed message must not kill the whole polling
+                    # thread (nothing restarts it), so isolate each one.
+                    try:
+                        self._process_message(msg)
+                    except Exception as e:
+                        log.error(f"failed to process message: {e}", exc_info=True)
                 time.sleep(self.poll_interval)
         except KeyboardInterrupt:
             log.info("stopped")

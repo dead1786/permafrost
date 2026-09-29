@@ -499,3 +499,85 @@ class TestLineWebhookEvent(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPollingLoopResilience(unittest.TestCase):
+    """A malformed update/message must not kill the polling thread.
+
+    Nothing restarts a crashed channel thread (main.py only logs it), so one
+    bad payload used to silence the channel until the whole process restarted.
+    """
+
+    def setUp(self):
+        self.tmp = make_temp_dir()
+
+    def tearDown(self):
+        cleanup_temp_dir(self.tmp)
+
+    def test_telegram_run_survives_malformed_update(self):
+        tg = PFTelegram(
+            config={"telegram_token": "t", "telegram_chat_id": "123"},
+            data_dir=self.tmp,
+        )
+        poison = {"update_id": 10, "message": {"chat": {"id": 123}, "photo": []}}
+        good = {"update_id": 11, "message": {"text": "still alive", "chat": {"id": 123}, "message_id": 1}}
+        batches = [[poison, good]]
+
+        def fake_get_updates():
+            if batches:
+                return batches.pop(0)
+            tg.running = False  # stop the loop after the first batch
+            return []
+
+        with patch.object(tg, "_get_updates", side_effect=fake_get_updates), \
+             patch.object(tg, "send_typing"), patch("channels.telegram.time.sleep"):
+            tg.run()  # must not raise
+
+        inbox = read_json(str(tg.inbox_file))
+        self.assertEqual([m["text"] for m in inbox], ["still alive"])
+        self.assertEqual(tg.last_update_id, 11)
+
+    def test_telegram_poison_update_offset_still_advances(self):
+        tg = PFTelegram(
+            config={"telegram_token": "t", "telegram_chat_id": "123"},
+            data_dir=self.tmp,
+        )
+        poison = {"update_id": 20, "message": {"chat": {"id": 123}, "photo": []}}
+        calls = []
+
+        def fake_get_updates():
+            calls.append(tg.last_update_id)
+            if len(calls) == 1:
+                return [poison]
+            tg.running = False
+            return []
+
+        with patch.object(tg, "_get_updates", side_effect=fake_get_updates), \
+             patch("channels.telegram.time.sleep"):
+            tg.run()
+        # offset moved past the poison update so it is not re-fetched forever
+        self.assertEqual(tg.last_update_id, 20)
+
+    def test_discord_run_survives_malformed_message(self):
+        dc = PFDiscord(
+            config={"discord_token": "t", "discord_channel_id": "c1"},
+            data_dir=self.tmp,
+        )
+        # Discord returns newest first; the run loop reverses to chronological.
+        bad = {"content": "no id field"}
+        good = {"id": "200", "content": "hello", "author": {"id": "u1", "username": "kai"},
+                "channel_id": "c1"}
+        batches = [[], [good, bad]]  # first call = startup skip, second = poll
+
+        def fake_get_messages():
+            if batches:
+                return batches.pop(0)
+            dc.running = False
+            return []
+
+        with patch.object(dc, "_get_messages", side_effect=fake_get_messages), \
+             patch("channels.discord.time.sleep"):
+            dc.run()  # must not raise
+
+        inbox = read_json(str(dc.inbox_file))
+        self.assertEqual([m["text"] for m in inbox], ["hello"])

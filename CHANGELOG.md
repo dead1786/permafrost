@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Telegram and Discord channels: a single malformed update/message (for example a Telegram message with an empty `photo` list, or a Discord message without an `id`) raised out of the polling loop and permanently killed that channel's thread, because nothing restarts a crashed channel thread. Each update/message is now processed in isolation, errors are logged with a traceback, and the Telegram offset still advances so a poison update is not re-fetched forever.
+
+### Added
+- 3 regression tests (`TestPollingLoopResilience`) covering the polling-loop behaviour above.
+
 ## v0.9.0 (2026-03-31)
 
 ### Added
