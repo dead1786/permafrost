@@ -5,8 +5,13 @@
 ### Fixed
 - Telegram and Discord channels: a single malformed update/message (for example a Telegram message with an empty `photo` list, or a Discord message without an `id`) raised out of the polling loop and permanently killed that channel's thread, because nothing restarts a crashed channel thread. Each update/message is now processed in isolation, errors are logged with a traceback, and the Telegram offset still advances so a poison update is not re-fetched forever.
 
+- Brain inbox: `_mark_read` used to truncate the whole inbox after replying, so any message a channel appended while the AI was still answering was silently lost. It now removes only the messages that were actually processed.
+- Brain main loop: an exception while handling one message (hook, tool, bad payload) propagated out of `run()` and killed the brain, and the unprocessed message came back on restart. Per-message handling now lives in `_handle_inbox_message`, which logs and swallows errors. Non-dict inbox entries are skipped instead of crashing `_check_inboxes`.
+- Background agents: `PFAgentManager.run_agent` overwrote `success = True` on every normal return, so tasks that reported an error (e.g. "No AI provider available") were recorded as successes in `agent-results.json`. Success is now `not result.error`; a task returning a non-`AgentResult` is recorded as a failure.
+
 ### Added
 - 3 regression tests (`TestPollingLoopResilience`) covering the polling-loop behaviour above.
+- 14 tests for the inbox/agent fixes above (`TestMarkRead`, `TestInboxRobustness`, `TestRunAgent`); the previous `test_mark_read` asserted over an empty list and could never fail.
 
 ## v0.9.0 (2026-03-31)
 

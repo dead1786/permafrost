@@ -393,7 +393,9 @@ class PFBrain:
                 messages = json.loads(text)
                 if not isinstance(messages, list) or not messages:
                     continue
-                unread = [m for m in messages if not m.get("read", False)]
+                # Skip malformed entries (non-dict) instead of crashing the loop
+                unread = [m for m in messages
+                          if isinstance(m, dict) and not m.get("read", False)]
                 if unread:
                     results.append((name, unread, messages))
             except (json.JSONDecodeError, OSError):
@@ -405,10 +407,33 @@ class PFBrain:
         return results
 
     def _mark_read(self, inbox_path: Path, messages: list):
-        """Clear inbox after processing to prevent re-reading stale messages."""
+        """Remove processed messages from the inbox.
+
+        Only the messages that were actually handed to the brain are dropped.
+        Anything a channel appended while the AI was still answering is kept,
+        otherwise a follow-up message sent mid-reply would be silently lost.
+        """
         try:
+            current = []
+            try:
+                raw = json.loads(Path(inbox_path).read_text(encoding="utf-8-sig"))
+                if isinstance(raw, list):
+                    current = raw
+            except (OSError, ValueError):
+                pass  # missing or corrupt inbox: nothing worth preserving
+
+            # Multiset removal so two identical messages are not both dropped
+            # when only one of them was processed.
+            pending = list(messages)
+            remaining = []
+            for m in current:
+                if m in pending:
+                    pending.remove(m)
+                else:
+                    remaining.append(m)
+
             with open(inbox_path, "w", encoding="utf-8") as f:
-                json.dump([], f)
+                json.dump(remaining, f, ensure_ascii=False)
         except OSError as e:
             log.error(f"inbox clear failed: {e}")
 
@@ -696,6 +721,36 @@ class PFBrain:
                 pass
         return True
 
+    def _handle_inbox_message(self, channel: str, msg: dict):
+        """Process one inbox message and route the reply.
+
+        Any failure is logged and swallowed: an exception here used to
+        propagate out of run() and kill the whole brain, and because the
+        inbox was never cleared the same poison message came back on restart.
+        """
+        try:
+            text = msg.get("text", msg.get("message", ""))
+            log.info(f"[{channel}] received: {text[:80]}")
+            self._log_message(channel, "in", text)
+
+            response = self._process_message(channel, msg)
+
+            if response is None:
+                # Blocked by hook / not whitelisted — skip this message
+                return
+
+            log.info(f"[{channel}] reply: {response[:80]}")
+            self._log_message(channel, "out", response)
+
+            # Route reply to source channel
+            if channel in self.channel_handlers:
+                try:
+                    self.channel_handlers[channel](response, msg)
+                except Exception as e:
+                    log.error(f"handler error [{channel}]: {e}")
+        except Exception as e:
+            log.error(f"[{channel}] message processing failed: {e}", exc_info=True)
+
     def run(self):
         """Main brain loop."""
         if not self._check_duplicate():
@@ -810,25 +865,7 @@ class PFBrain:
                 if inbox_results:
                     for channel, unread, all_msgs in inbox_results:
                         for msg in unread:
-                            text = msg.get("text", msg.get("message", ""))
-                            log.info(f"[{channel}] received: {text[:80]}")
-                            self._log_message(channel, "in", text)
-
-                            response = self._process_message(channel, msg)
-
-                            if response is None:
-                                # Blocked by hook — skip this message
-                                continue
-
-                            log.info(f"[{channel}] reply: {response[:80]}")
-                            self._log_message(channel, "out", response)
-
-                            # Route reply to source channel
-                            if channel in self.channel_handlers:
-                                try:
-                                    self.channel_handlers[channel](response, msg)
-                                except Exception as e:
-                                    log.error(f"handler error [{channel}]: {e}")
+                            self._handle_inbox_message(channel, msg)
 
                         self._mark_read(self.channel_inboxes[channel], all_msgs)
 

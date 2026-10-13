@@ -158,8 +158,96 @@ class TestMarkRead(unittest.TestCase):
         msgs = [{"text": "hello", "read": False}, {"text": "world", "read": False}]
         write_json(inbox, msgs)
         self.brain._mark_read(Path(inbox), msgs)
-        updated = read_json(inbox)
-        self.assertTrue(all(m["read"] for m in updated))
+        # Everything handed to the brain was processed, so nothing is left.
+        self.assertEqual(read_json(inbox), [])
+
+    def test_mark_read_keeps_messages_that_arrived_meanwhile(self):
+        """A message written while the AI was replying must survive."""
+        inbox = os.path.join(self.tmp, "inbox.json")
+        processed = [{"text": "first", "read": False, "timestamp": "t1"}]
+        late = {"text": "sent during reply", "read": False, "timestamp": "t2"}
+        write_json(inbox, processed + [late])
+        self.brain._mark_read(Path(inbox), processed)
+        self.assertEqual(read_json(inbox), [late])
+
+    def test_mark_read_removes_only_one_of_two_identical_messages(self):
+        inbox = os.path.join(self.tmp, "inbox.json")
+        dup = {"text": "ping", "read": False}
+        write_json(inbox, [dup, dict(dup)])
+        self.brain._mark_read(Path(inbox), [dup])
+        self.assertEqual(read_json(inbox), [dup])
+
+    def test_mark_read_recovers_from_corrupt_inbox(self):
+        inbox = os.path.join(self.tmp, "inbox.json")
+        with open(inbox, "w") as f:
+            f.write("{not json")
+        self.brain._mark_read(Path(inbox), [{"text": "x"}])
+        self.assertEqual(read_json(inbox), [])
+
+    def test_mark_read_missing_inbox_does_not_raise(self):
+        inbox = Path(self.tmp) / "gone.json"
+        self.brain._mark_read(inbox, [{"text": "x"}])
+        self.assertEqual(read_json(str(inbox)), [])
+
+
+class TestInboxRobustness(unittest.TestCase):
+    """Malformed inbox content and failing handlers must not kill the brain."""
+
+    def setUp(self):
+        self.tmp = make_temp_dir()
+        self.config_path = os.path.join(self.tmp, "config.json")
+        write_json(self.config_path, {"data_dir": self.tmp, "api_key": "test"})
+        self.brain = PFBrain(self.config_path)
+        self.inbox = os.path.join(self.tmp, "tg-inbox.json")
+        self.brain.register_channel("telegram", self.inbox)
+
+    def tearDown(self):
+        cleanup_temp_dir(self.tmp)
+
+    def test_non_dict_inbox_entries_are_skipped(self):
+        write_json(self.inbox, ["stray string", 42, None,
+                                {"text": "real", "read": False}])
+        results = self.brain._check_inboxes()
+        self.assertEqual(len(results), 1)
+        _, unread, _ = results[0]
+        self.assertEqual([m["text"] for m in unread], ["real"])
+
+    def test_handle_message_routes_reply_to_channel_handler(self):
+        handler = MagicMock()
+        self.brain.channel_handlers["telegram"] = handler
+        msg = {"text": "hi", "read": False}
+        with patch.object(self.brain, "_process_message", return_value="hello back"):
+            self.brain._handle_inbox_message("telegram", msg)
+        handler.assert_called_once_with("hello back", msg)
+
+    def test_handle_message_blocked_sends_no_reply(self):
+        handler = MagicMock()
+        self.brain.channel_handlers["telegram"] = handler
+        with patch.object(self.brain, "_process_message", return_value=None):
+            self.brain._handle_inbox_message("telegram", {"text": "hi"})
+        handler.assert_not_called()
+
+    def test_handle_message_swallows_processing_error(self):
+        handler = MagicMock()
+        self.brain.channel_handlers["telegram"] = handler
+        with patch.object(self.brain, "_process_message",
+                          side_effect=RuntimeError("boom")):
+            # Must not raise: an exception here would terminate run().
+            self.brain._handle_inbox_message("telegram", {"text": "hi"})
+        handler.assert_not_called()
+
+    def test_handle_message_swallows_reply_handler_error(self):
+        self.brain.channel_handlers["telegram"] = MagicMock(
+            side_effect=ConnectionError("telegram down"))
+        with patch.object(self.brain, "_process_message", return_value="ok"):
+            self.brain._handle_inbox_message("telegram", {"text": "hi"})
+
+    def test_handle_message_logs_in_and_out(self):
+        with patch.object(self.brain, "_process_message", return_value="pong"):
+            self.brain._handle_inbox_message("telegram", {"text": "ping"})
+        log = read_json(str(self.brain.message_log))
+        self.assertEqual([(e["direction"], e["text"]) for e in log],
+                         [("in", "ping"), ("out", "pong")])
 
 
 class TestMessageBuilding(unittest.TestCase):

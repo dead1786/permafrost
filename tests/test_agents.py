@@ -177,6 +177,60 @@ class TestRunAgent:
         last = results[-1]
         assert last["agent"] == "fail-test"
 
+    @staticmethod
+    def _wait(manager, name):
+        for _ in range(100):
+            if not manager.is_running(name):
+                return
+            time.sleep(0.05)
+
+    def test_returned_error_is_recorded_as_failure(self, manager):
+        """A task that returns normally but sets .error must not become success."""
+        def task(data_dir, provider, **kw):
+            r = AgentResult("no-provider", "task")
+            r.error = "No AI provider available"
+            return r
+
+        manager.run_agent("no-provider", task)
+        self._wait(manager, "no-provider")
+        last = manager.get_recent_results()[-1]
+        assert last["success"] is False
+        assert last["error"] == "No AI provider available"
+
+    def test_clean_return_without_explicit_success_is_success(self, manager):
+        """Custom tasks need not set .success themselves."""
+        def task(data_dir, provider, **kw):
+            return AgentResult("custom", "task")
+
+        manager.run_agent("custom", task)
+        self._wait(manager, "custom")
+        last = manager.get_recent_results()[-1]
+        assert last["success"] is True
+        assert last["error"] == ""
+        assert last["completed_at"]
+
+    def test_task_returning_none_is_recorded_as_failure(self, manager):
+        def task(data_dir, provider, **kw):
+            return None
+
+        manager.run_agent("returns-none", task)
+        self._wait(manager, "returns-none")
+        assert not manager.is_running("returns-none")
+        last = manager.get_recent_results()[-1]
+        assert last["agent"] == "returns-none"
+        assert last["success"] is False
+        assert "AgentResult" in last["error"]
+
+    def test_exception_recorded_as_failure_with_message(self, manager):
+        def task(data_dir, provider, **kw):
+            raise RuntimeError("kaboom")
+
+        manager.run_agent("raiser", task)
+        self._wait(manager, "raiser")
+        last = manager.get_recent_results()[-1]
+        assert last["success"] is False
+        assert "kaboom" in last["error"]
+
     def test_agent_removed_from_active_after_done(self, manager):
         def quick_task(data_dir, provider, **kw):
             r = AgentResult("quick", "quick_task")

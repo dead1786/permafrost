@@ -91,10 +91,21 @@ class PFAgentManager:
             try:
                 log.info(f"Agent '{agent_name}' started: {task_func.__name__}")
                 activity["last"] = time.time()
-                result = task_func(str(self.data_dir), provider, **kwargs)
+                returned = task_func(str(self.data_dir), provider, **kwargs)
+                if not isinstance(returned, AgentResult):
+                    raise TypeError(
+                        f"{task_func.__name__} returned {type(returned).__name__}, "
+                        "expected AgentResult"
+                    )
+                result = returned
                 result.completed_at = datetime.now().isoformat()
-                result.success = True
-                log.info(f"Agent '{agent_name}' completed: {len(result.changes)} changes")
+                # A task that reports an error (e.g. "No AI provider available")
+                # returns normally; don't overwrite that as a success.
+                result.success = not result.error
+                if result.success:
+                    log.info(f"Agent '{agent_name}' completed: {len(result.changes)} changes")
+                else:
+                    log.error(f"Agent '{agent_name}' reported failure: {result.error}")
             except Exception as e:
                 result.error = str(e)
                 result.completed_at = datetime.now().isoformat()
